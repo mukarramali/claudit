@@ -77,6 +77,8 @@ type Trajectory struct {
 	Calls          []Call
 	Items          []item
 	Scaffold       *scaffold
+	Listed         map[string]int  // MCP server -> tokens it adds to the tool listing
+	UsedMCP        map[string]bool // MCP server -> actually called at least once
 }
 
 // scaffold is the system prompt and tool schemas prepended to every call. The
@@ -85,6 +87,33 @@ type Trajectory struct {
 type scaffold struct {
 	System int
 	Tools  map[string]int
+}
+
+// noteListing records what each MCP server contributes to the deferred-tool
+// listing, so servers that are never called can be priced separately.
+func (t *Trajectory) noteListing(raw json.RawMessage) {
+	var a struct {
+		Type  string   `json:"type"`
+		Lines []string `json:"addedLines"`
+		Names []string `json:"addedNames"`
+	}
+	if json.Unmarshal(raw, &a) != nil || a.Type != "deferred_tools_delta" {
+		return
+	}
+	for i, name := range a.Names {
+		srv := mcpServer(name)
+		if srv == "" {
+			continue
+		}
+		text := name
+		if i < len(a.Lines) {
+			text = a.Lines[i]
+		}
+		if t.Listed == nil {
+			t.Listed = map[string]int{}
+		}
+		t.Listed[srv] += countTokens(text)
+	}
 }
 
 func parseScaffold(raw json.RawMessage) *scaffold {
@@ -105,8 +134,8 @@ func parseScaffold(raw json.RawMessage) *scaffold {
 	}
 	for _, tl := range a.Tools {
 		label := "built-in"
-		if parts := strings.Split(tl.Name, "__"); len(parts) >= 3 && parts[0] == "mcp" {
-			label = "MCP " + parts[1]
+		if srv := mcpServer(tl.Name); srv != "" {
+			label = "MCP " + srv
 		}
 		sc.Tools[label] += countTokens(tl.Name + tl.Description + string(tl.Schema))
 	}
@@ -306,6 +335,14 @@ func metaLabel(r record, s *state) string {
 	return "session bookkeeping"
 }
 
+// mcpServer extracts the server from an mcp__<server>__<tool> name, or "".
+func mcpServer(name string) string {
+	if parts := strings.Split(name, "__"); len(parts) >= 3 && parts[0] == "mcp" {
+		return parts[1]
+	}
+	return ""
+}
+
 // toolLabel names a tool call: MCP tools by their server, Skill calls by the
 // skill invoked, everything else by the tool name.
 func toolLabel(b block) string {
@@ -317,8 +354,8 @@ func toolLabel(b block) string {
 			return "skill " + in.Skill
 		}
 	}
-	if parts := strings.Split(b.Name, "__"); len(parts) >= 3 && parts[0] == "mcp" {
-		return "MCP " + parts[1]
+	if srv := mcpServer(b.Name); srv != "" {
+		return "MCP " + srv
 	}
 	return cmp.Or(b.Name, "tool")
 }
@@ -400,6 +437,7 @@ func (t *Trajectory) apply(s *state, r record) {
 		n := tokensIn(r.Attachment)
 		s.A += n
 		t.add(setup, attachmentLabel(r.Attachment), n, false)
+		t.noteListing(r.Attachment)
 	case "system":
 		n := tokensIn(r.HookContext)
 		s.A += n
@@ -463,6 +501,12 @@ func (t *Trajectory) apply(s *state, r record) {
 				c.MTool += n
 				label := toolLabel(b)
 				s.tools[b.ID] = label
+				if srv := mcpServer(b.Name); srv != "" {
+					if t.UsedMCP == nil {
+						t.UsedMCP = map[string]bool{}
+					}
+					t.UsedMCP[srv] = true
+				}
 				t.add(outKind, "asking for "+label, n, true)
 			case "thinking":
 				c.R += n

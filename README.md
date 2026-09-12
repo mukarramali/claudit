@@ -121,6 +121,35 @@ load, the tools you reach for.
   results — accounts for $38 of $168 (22%).
 ```
 
+It ends with three findings, each pinned to a number from your own sessions:
+
+```
+  WHAT TO CHANGE
+  ────────────────────────────────────────────────────────────────────
+
+  1  38 of 48 MCP servers were never called                        $10
+     Their tool listings ride every call anyway. You used 10.
+     Idle: claude_ai_PagerDuty, claude_ai_Figma, +36 more
+
+  2  A call late in a session costs 1.9x an early one
+     per call:  1-10 $0.05   11-25 $0.05   26-50 $0.06   51+ $0.10
+     Every turn resends the ones before it. /clear between tasks.
+
+  3  Cache is healthy — 97% read, 3% rewritten                    good
+```
+
+1. **Idle MCP servers.** A connected server's tool listing is prepended to every
+   call whether you use it or not. Servers listed but never called are pure
+   waste, priced by their share of the listing. Disconnecting one has no
+   downside, which is what makes this the first thing to act on.
+2. **Session depth.** Every turn resends the ones before it, so the same work
+   costs more the later it happens. The fix — `/clear` between unrelated tasks —
+   is free.
+3. **Cache health.** Cached input costs 0.1× to read but 1.25–2× to write. A
+   hook that emits a timestamp, or anything else that changes near the start of
+   the context, quietly turns every read into a rewrite. The healthy case is
+   boring, which is exactly why it is worth checking.
+
 **How the split works.** Cost is attributed by _replay_, not by size. A token
 that enters the context early is re-billed on every later call, so an item's
 real cost is its size × the number of inference calls that carried it. Those
