@@ -1,4 +1,4 @@
-// tokaudit counts tokens locally from agent transcripts and compares the result
+// claudit counts tokens locally from agent transcripts and compares the result
 // with the provider-reported usage embedded in those transcripts.
 //
 // Buckets and formulas follow docs/idea.md:

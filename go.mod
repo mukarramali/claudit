@@ -1,4 +1,4 @@
-module tokaudit
+module claudit
 
 go 1.24
 

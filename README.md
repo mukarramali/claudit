@@ -1,4 +1,4 @@
-# tokaudit
+# claudit
 
 Counts tokens locally from Claude Code transcripts and prices them against the
 provider usage those transcripts already carry.
@@ -12,7 +12,7 @@ from `~/.claude/projects/**/*.jsonl` rather than taken on trust.
 ## Build
 
 ```sh
-go build -o tokaudit .
+go build -o claudit .
 ```
 
 One dependency (`tiktoken-go`). The `o200k_base` table downloads once and caches;
@@ -21,8 +21,8 @@ set `TIKTOKEN_CACHE_DIR` to control where.
 ## Usage
 
 ```
-tokaudit [-v] [-json] [path...]      one session: where the money went
-tokaudit insights [-days N] [path...]  your setup: what it costs you
+claudit [-v] [-json] [path...]      one session: where the money went
+claudit insights [-days N] [path...]  your setup: what it costs you
 
   path    a .jsonl transcript, or a ~/.claude/projects/<slug> directory
           default: the project matching $PWD; insights defaults to every project
@@ -34,7 +34,7 @@ tokaudit insights [-days N] [path...]  your setup: what it costs you
 ### Audit the session you're in
 
 ```sh
-$ cd ~/work/my-project && ./tokaudit
+$ cd ~/work/my-project && ./claudit
 ```
 
 ```
@@ -67,13 +67,13 @@ $ cd ~/work/my-project && ./tokaudit
 ### One transcript
 
 ```sh
-$ ./tokaudit ~/.claude/projects/-Users-me-work-app/d13c23d7-….jsonl
+$ ./claudit ~/.claude/projects/-Users-me-work-app/d13c23d7-….jsonl
 ```
 
 ### Every session you've ever run
 
 ```sh
-$ ./tokaudit ~/.claude/projects/*/
+$ ./claudit ~/.claude/projects/*/
 ```
 
 Each session gets its own report, followed by a merged one. Sessions on different
@@ -82,7 +82,7 @@ models are priced individually and summed — no single rate is applied to the m
 ### Personal insights — what your own setup costs
 
 ```sh
-$ ./tokaudit insights            # last 30 days, every project; -days 0 for all time
+$ ./claudit insights            # last 30 days, every project; -days 0 for all time
 ```
 
 The main report says where the money went. `insights` says _whose fault it is_ —
@@ -135,7 +135,7 @@ conversation content.
 ### Per-call detail
 
 ```sh
-$ ./tokaudit -v
+$ ./claudit -v
 ```
 
 ```
@@ -151,13 +151,13 @@ it are the local reconstruction. The difference is what the transcript can't see
 ### Scripting
 
 ```sh
-$ tokaudit -json ~/.claude/projects/*/ | jq -r '
+$ claudit -json ~/.claude/projects/*/ | jq -r '
     sort_by(-.cost_usd) | .[:5][] | "\(.session)  $\(.cost_usd|floor)"'
 ```
 
 ```sh
 # what has this month cost so far?
-$ tokaudit -json ~/.claude/projects/*/ | jq '[.[].cost_usd] | add'
+$ claudit -json ~/.claude/projects/*/ | jq '[.[].cost_usd] | add'
 ```
 
 ## Reading the numbers

@@ -18,7 +18,7 @@ go.mod         1 dep: github.com/pkoukk/tiktoken-go (already in module cache)
 ## CLI
 
 ```
-tokaudit [flags] [path...]
+claudit [flags] [path...]
 
   path    .jsonl file, or a ~/.claude/projects/<slug> dir
           default: the project dir matching $PWD
@@ -46,15 +46,15 @@ type Call struct {
 
 ## Bucketing (verified against a real 1136-line transcript)
 
-| Bucket | JSONL source |
-|---|---|
-| `P` prompt | `type:user`, `isMeta` unset, content string or `text` blocks |
+| Bucket          | JSONL source                                                                              |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| `P` prompt      | `type:user`, `isMeta` unset, content string or `text` blocks                              |
 | `T` tool output | `type:user`, `tool_result` blocks (content only — **not** the duplicated `toolUseResult`) |
-| `A` attachment | `type:attachment` + `isMeta:true` user records + `type:system` hook output |
-| `M_text` | assistant `text` blocks |
-| `M_tool` | assistant `tool_use` blocks, serialized name+input JSON |
-| `R` reasoning | assistant `thinking` blocks |
-| `N` | count of distinct `message.id` |
+| `A` attachment  | `type:attachment` + `isMeta:true` user records + `type:system` hook output                |
+| `M_text`        | assistant `text` blocks                                                                   |
+| `M_tool`        | assistant `tool_use` blocks, serialized name+input JSON                                   |
+| `R` reasoning   | assistant `thinking` blocks                                                               |
+| `N`             | count of distinct `message.id`                                                            |
 
 Attachments have ~10 different shapes and no common content field. Rule:
 `.attachment.content // .attachment.text // <whole object as JSON>`. Covers the
@@ -107,7 +107,7 @@ provider dashboard cannot show you.
 
 ## Tokenizer
 
-`o200k_base` via tiktoken-go — the idea doc's baseline. It is the *wrong family*
+`o200k_base` via tiktoken-go — the idea doc's baseline. It is the _wrong family_
 for Claude and there is no public Claude BPE, so counts carry a systematic bias.
 That is acceptable precisely because the transcript carries ground truth: the
 tool prints the local/provider ratio, which makes the bias visible and
