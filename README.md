@@ -7,7 +7,7 @@ Provider dashboards give you a total. This gives you the breakdown: what filled
 the context, what the model produced, and what each part cost — reconstructed
 from `~/.claude/projects/**/*.jsonl` rather than taken on trust.
 
-Background and formulas: [`docs/idea.md`](docs/idea.md). Design: [`docs/plan.md`](docs/plan.md).
+> Inspired by [Martin Monperrus](https://www.monperrus.net/martin/measuring-tokens)
 
 ## Build
 
@@ -34,7 +34,7 @@ tokaudit insights [-days N] [path...]  your setup: what it costs you
 ### Audit the session you're in
 
 ```sh
-$ cd ~/work/my-project && tokaudit
+$ cd ~/work/my-project && ./tokaudit
 ```
 
 ```
@@ -67,13 +67,13 @@ $ cd ~/work/my-project && tokaudit
 ### One transcript
 
 ```sh
-$ tokaudit ~/.claude/projects/-Users-me-work-app/d13c23d7-….jsonl
+$ ./tokaudit ~/.claude/projects/-Users-me-work-app/d13c23d7-….jsonl
 ```
 
 ### Every session you've ever run
 
 ```sh
-$ tokaudit ~/.claude/projects/*/
+$ ./tokaudit ~/.claude/projects/*/
 ```
 
 Each session gets its own report, followed by a merged one. Sessions on different
@@ -82,10 +82,10 @@ models are priced individually and summed — no single rate is applied to the m
 ### Personal insights — what your own setup costs
 
 ```sh
-$ tokaudit insights            # last 30 days, every project; -days 0 for all time
+$ ./tokaudit insights            # last 30 days, every project; -days 0 for all time
 ```
 
-The main report says where the money went. `insights` says *whose fault it is* —
+The main report says where the money went. `insights` says _whose fault it is_ —
 your hooks, your CLAUDE.md, the MCP servers you have connected, the skills you
 load, the tools you reach for.
 
@@ -121,7 +121,7 @@ load, the tools you reach for.
   results — accounts for $38 of $168 (22%).
 ```
 
-**How the split works.** Cost is attributed by *replay*, not by size. A token
+**How the split works.** Cost is attributed by _replay_, not by size. A token
 that enters the context early is re-billed on every later call, so an item's
 real cost is its size × the number of inference calls that carried it. Those
 weights sum exactly to the input actually sent, so the provider's real dollars
@@ -135,7 +135,7 @@ conversation content.
 ### Per-call detail
 
 ```sh
-$ tokaudit -v
+$ ./tokaudit -v
 ```
 
 ```
