@@ -210,7 +210,9 @@ func insights(all []Trajectory, since time.Time, days int) {
 	}
 
 	span := ""
-	if !oldest.IsZero() {
+	if days > 0 {
+		span = fmt.Sprintf("%s → %s · ", since.Format("2 Jan"), time.Now().Format("2 Jan 2006"))
+	} else if !oldest.IsZero() {
 		span = fmt.Sprintf("%s → %s · ", oldest.Format("2 Jan"), newest.Format("2 Jan 2006"))
 	}
 	fmt.Printf("\n%s\n  YOUR CLAUDE CODE SPEND\n  %s%s sessions · %s model calls · %s\n%s\n",
