@@ -583,7 +583,7 @@ func priceOf(model string, o totals) bill {
 	}
 }
 
-// ---------- report ----------
+// ---------- totals ----------
 
 type totals struct {
 	Session            string  `json:"session"`
@@ -683,98 +683,7 @@ func money(v float64) string {
 	return "$" + comma(int(v+0.5))
 }
 
-func pct(part, whole int) string {
-	if whole == 0 {
-		return "   - "
-	}
-	return fmt.Sprintf("%4.1f%%", 100*float64(part)/float64(whole))
-}
-
 var rule = "  " + strings.Repeat("─", 68)
-
-// line renders one "name  explanation ..... number  amount" row.
-func line(name, why string, n int, right string) {
-	if len(why) > 30 {
-		why = why[:30]
-	}
-	fmt.Printf("  %-14s %-30s %12s  %8s\n", name, why, comma(n), right)
-}
-
-// head prints a section title with the two right-hand columns labelled.
-func head(title, a, b string) { fmt.Printf("\n  %-44s%14s%10s\n", title, a, b) }
-
-func report(t Trajectory, verbose bool) {
-	o := sum(t)
-	b := priceOf(o.Model, o)
-
-	model := o.Model
-	if model == "" {
-		model = "unknown model"
-	}
-	fmt.Printf("\n%s\n  %s\n  %s · %s model calls · %s prompts from you\n%s\n",
-		rule, o.Session, model, comma(o.Calls), comma(o.Turns), rule)
-
-	if b.Priced {
-		head("THE BILL", "tokens", "cost")
-		line("output", "everything Claude wrote", o.ProviderOutput, money(b.Out))
-		line("cache reads", "context re-read on every call", o.ProviderCacheRead, money(b.CacheRead))
-		line("cache writes", "saved so re-reads are cheap", o.ProviderCacheMake, money(b.CacheWrite))
-		line("fresh input", "text it had never seen before", o.ProviderInput, money(b.FreshIn))
-		fmt.Println(rule)
-		line("total", "", o.ProviderInputTotal+o.ProviderOutput, money(b.total()))
-		if o.Calls > 0 {
-			fmt.Printf("  %-14s %-30s %12s  %8s\n", "", "per model call", "",
-				money(b.total()/float64(o.Calls)))
-		}
-		if o.Turns > 0 {
-			fmt.Printf("  %-14s %-30s %12s  %8s\n", "", "per prompt you sent", "",
-				money(b.total()/float64(o.Turns)))
-		}
-	} else {
-		if o.Model == "" {
-			head("THE BILL   mixed models - see each session above", "tokens", "")
-		} else {
-			head(fmt.Sprintf("THE BILL   no list price for %q", o.Model), "tokens", "")
-		}
-		line("output", "everything Claude wrote", o.ProviderOutput, "")
-		line("input", "fresh + cache writes + reads", o.ProviderInputTotal, "")
-	}
-
-	head("WHAT IT WAS READING", "tokens", "share")
-	line("replay", "prior turns re-sent each call", o.X, pct(o.X, o.TrajectoryInput))
-	line("attachments", "CLAUDE.md, hooks, skill lists", o.A, pct(o.A, o.TrajectoryInput))
-	line("tool results", "files read, commands run", o.T, pct(o.T, o.TrajectoryInput))
-	line("your prompts", "the words you actually typed", o.P, pct(o.P, o.TrajectoryInput))
-	if gap := o.ProviderInputTotal - o.TrajectoryInput; gap > 0 && o.Calls > 0 {
-		line("not in the log", "system prompt + tool schemas", gap, pct(gap, o.ProviderInputTotal))
-		fmt.Printf("  %-14s %-30s %12s\n", "", "≈ per model call", comma(gap/o.Calls))
-	}
-
-	head("WHAT IT PRODUCED", "tokens", "share")
-	line("reasoning", "thinking, billed either way", o.R, pct(o.R, o.TrajectoryOutput))
-	line("tool calls", "commands and edits it issued", o.MTool, pct(o.MTool, o.TrajectoryOutput))
-	line("text", "the words you read", o.MText, pct(o.MText, o.TrajectoryOutput))
-
-	if o.RedactedThinking > 0 {
-		fmt.Printf("\n  note: %d thinking block(s) have no readable content locally; the %s\n"+
-			"        reasoning tokens they cost come from the provider's own count.\n",
-			o.RedactedThinking, comma(o.ProviderThinking))
-	}
-	if o.CallsWithoutUsage > 0 {
-		fmt.Printf("  note: %d call(s) carry no usage, so the bill above is partial.\n", o.CallsWithoutUsage)
-	}
-
-	if verbose {
-		fmt.Printf("\n  %3s %8s %8s %8s %10s %10s %9s %9s\n",
-			"n", "prompt", "tools", "attach", "replay", "in(actual)", "out", "cost")
-		for i, c := range t.Calls {
-			cb := priceOf(o.Model, sum(Trajectory{Model: o.Model, Calls: []Call{c}}))
-			fmt.Printf("  %3d %8s %8s %8s %10s %10s %9s %9s\n", i+1,
-				comma(c.P), comma(c.T), comma(c.A), comma(c.X),
-				comma(c.Provider.InputTotal()), comma(c.Provider.Output), money(cb.total()))
-		}
-	}
-}
 
 // ---------- main ----------
 
@@ -822,19 +731,18 @@ func transcripts(args []string) ([]string, error) {
 }
 
 func main() {
-	mode := ""
-	if len(os.Args) > 1 && os.Args[1] == "insights" {
-		mode, os.Args = "insights", append(os.Args[:1], os.Args[2:]...)
-	}
-	asJSON := flag.Bool("json", false, "machine-readable output")
-	verbose := flag.Bool("v", false, "per-inference-call breakdown")
-	days := flag.Int("days", 30, "insights: how far back to look")
+	allFlag := flag.Bool("all", false, "insights across all projects, not just the current one")
+	asJSON := flag.Bool("json", false, "machine-readable totals per session")
+	days := flag.Int("days", 30, "how far back to look (0 = all time)")
 	flag.Parse()
 
-	args := flag.Args()
-	if mode == "insights" && len(args) == 0 {
-		args = allProjects() // insights looks at everything you have done, not one project
+	var args []string
+	if *allFlag {
+		args = allProjects()
+	} else {
+		args = flag.Args()
 	}
+
 	files, err := transcripts(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -856,11 +764,6 @@ func main() {
 		all = append(all, parseClaude(data, id)...)
 	}
 
-	if mode == "insights" {
-		insights(all, time.Now().AddDate(0, 0, -*days), *days)
-		return
-	}
-
 	if *asJSON {
 		out := make([]totals, 0, len(all))
 		for _, t := range all {
@@ -872,25 +775,5 @@ func main() {
 		return
 	}
 
-	for _, t := range all {
-		report(t, *verbose)
-	}
-	if len(all) > 1 {
-		merged := Trajectory{ID: fmt.Sprintf("ALL %d sessions", len(all)), Model: all[0].Model}
-		for _, t := range all {
-			merged.Calls = append(merged.Calls, t.Calls...)
-			if t.Model != merged.Model {
-				merged.Model = "" // mixed models: no single price applies
-			}
-		}
-		report(merged, false)
-		if merged.Model == "" {
-			grand := 0.0
-			for _, t := range all {
-				grand += sum(t).CostUSD
-			}
-			fmt.Printf("  %-14s %-30s %12s  %8s\n", "", "all sessions, priced each", "", money(grand))
-		}
-	}
-	fmt.Println()
+	insights(all, time.Now().AddDate(0, 0, -*days), *days)
 }
