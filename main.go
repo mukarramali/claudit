@@ -731,16 +731,18 @@ func transcripts(args []string) ([]string, error) {
 }
 
 func main() {
-	allFlag := flag.Bool("all", false, "insights across all projects, not just the current one")
+	hereFlag := flag.Bool("here", false, "only the project in the current directory")
 	asJSON := flag.Bool("json", false, "machine-readable totals per session")
 	days := flag.Int("days", 30, "how far back to look (0 = all time)")
 	flag.Parse()
 
 	var args []string
-	if *allFlag {
-		args = allProjects()
+	if *hereFlag {
+		args = nil // transcripts(nil) resolves cwd slug
+	} else if rest := flag.Args(); len(rest) > 0 {
+		args = rest
 	} else {
-		args = flag.Args()
+		args = allProjects()
 	}
 
 	files, err := transcripts(args)
