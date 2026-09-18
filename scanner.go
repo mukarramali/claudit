@@ -1,0 +1,324 @@
+package main
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"math"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+)
+
+// credential is a single pattern hit inside a trace file.
+type credential struct {
+	Project string
+	Session string
+	Start   time.Time
+	Label   string
+	Preview string // first 8 chars … last 4 chars
+	Len     int
+}
+
+// traceFile carries the raw bytes plus enough metadata for the scanner.
+type traceFile struct {
+	Project string
+	Session string
+	Start   time.Time
+	Data    []byte
+}
+
+// ---------- known-format patterns ----------
+
+// credPattern catches secrets with a fixed recognisable shape (prefix, structure).
+type credPattern struct {
+	Label string
+	Re    *regexp.Regexp
+}
+
+var credPatterns = []credPattern{
+	{"Private Key", regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY`)},
+	{"GitHub Token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`)},
+	{"Anthropic Key", regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{40,}`)},
+	{"OpenAI Key", regexp.MustCompile(`sk-[A-Za-z0-9]{48,}`)},
+	{"JWT", regexp.MustCompile(`eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`)},
+	{"DB Connection URL", regexp.MustCompile(`(?:postgres|mysql|mongodb|redis)://[^:"\s]+:[^@"'\s]+@[^"'\s]+`)},
+	{"Bearer Token", regexp.MustCompile(`[Bb]earer [A-Za-z0-9_.-]{20,}`)},
+}
+
+// ---------- entropy-based detection ----------
+
+// secretKeyRe matches JSON key names that suggest the value is a secret.
+var secretKeyRe = regexp.MustCompile(`(?i)(password|passwd|secret|token|api[_-]?key|auth|credential|private[_-]?key|access[_-]?key|api[_-]?secret|client[_-]?secret)`)
+
+// keyValueRe extracts "key": "value" pairs from JSON text.
+// Min value length 16 to skip obviously short non-secrets.
+var keyValueRe = regexp.MustCompile(`"([^"]{2,60})"\s*:\s*"([^"]{16,})"`)
+
+// shannonEntropy returns bits-per-character for s.
+func shannonEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	freq := map[rune]float64{}
+	for _, c := range s {
+		freq[c]++
+	}
+	n := float64(len([]rune(s)))
+	var h float64
+	for _, f := range freq {
+		p := f / n
+		h -= p * math.Log2(p)
+	}
+	return h
+}
+
+// charsetEntropy returns the entropy and whether the string is confined to a
+// known high-density alphabet (base64 or hex). Confined strings need a lower
+// threshold because their theoretical max is already lower than free text.
+type charsetKind int
+
+const (
+	charsetGeneral charsetKind = iota
+	charsetHex
+	charsetBase64
+)
+
+func classifyCharset(s string) charsetKind {
+	hex, b64 := true, true
+	b64chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=-_"
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
+			hex = false
+		}
+		if !strings.ContainsRune(b64chars, c) {
+			b64 = false
+		}
+	}
+	switch {
+	case hex:
+		return charsetHex
+	case b64:
+		return charsetBase64
+	default:
+		return charsetGeneral
+	}
+}
+
+// isHighEntropy returns true if s looks like a secret based on entropy alone.
+// Thresholds tuned to minimise false positives on UUIDs and English prose.
+func isHighEntropy(s string) bool {
+	if len(s) < 16 {
+		return false
+	}
+	e := shannonEntropy(s)
+	switch classifyCharset(s) {
+	case charsetHex:
+		return e > 3.2 && len(s) >= 32 // hex secrets are long; UUIDs pass entropy but fail length with dashes
+	case charsetBase64:
+		return e > 4.5
+	default:
+		return e > 4.8
+	}
+}
+
+// scanEntropy finds "key": "value" pairs where the key name looks secret-like
+// and the value has high entropy.
+func scanEntropy(text string) []struct{ label, value string } {
+	var out []struct{ label, value string }
+	for _, m := range keyValueRe.FindAllStringSubmatch(text, -1) {
+		key, val := m[1], m[2]
+		if !secretKeyRe.MatchString(key) {
+			continue
+		}
+		if !isHighEntropy(val) {
+			continue
+		}
+		out = append(out, struct{ label, value string }{"high-entropy " + key, val})
+	}
+	return out
+}
+
+// ---------- JWT enrichment ----------
+
+func jwtIssuer(token string) string {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	raw := parts[1]
+	if n := len(raw) % 4; n != 0 {
+		raw += strings.Repeat("=", 4-n)
+	}
+	b, err := base64.URLEncoding.DecodeString(raw)
+	if err != nil {
+		return ""
+	}
+	var payload struct {
+		Iss string `json:"iss"`
+	}
+	if json.Unmarshal(b, &payload) != nil {
+		return ""
+	}
+	return payload.Iss
+}
+
+// ---------- scanner entry point ----------
+
+func scanTraces(files []traceFile) []credential {
+	type dedupKey struct{ session, label, preview string }
+	seen := map[dedupKey]bool{}
+
+	add := func(hits *[]credential, tf traceFile, label, value string) {
+		preview := redact(value)
+		k := dedupKey{tf.Session, label, preview}
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		*hits = append(*hits, credential{
+			Project: tf.Project,
+			Session: tf.Session,
+			Start:   tf.Start,
+			Label:   label,
+			Preview: preview,
+			Len:     len(value),
+		})
+	}
+
+	var hits []credential
+	for _, tf := range files {
+		text := string(tf.Data)
+
+		// Pass 1: known-format patterns.
+		for _, cp := range credPatterns {
+			for _, m := range cp.Re.FindAllString(text, -1) {
+				label := cp.Label
+				if cp.Label == "JWT" {
+					if iss := jwtIssuer(m); iss != "" {
+						label = fmt.Sprintf("JWT (iss: %s)", iss)
+					}
+				}
+				add(&hits, tf, label, m)
+			}
+		}
+
+		// Pass 2: entropy — catches secrets with no recognisable prefix.
+		for _, e := range scanEntropy(text) {
+			add(&hits, tf, e.label, e.value)
+		}
+	}
+	return hits
+}
+
+// ---------- output ----------
+
+func redact(s string) string {
+	if len(s) <= 12 {
+		return strings.Repeat("*", len(s))
+	}
+	return s[:8] + "…" + s[len(s)-4:]
+}
+
+func printScanReport(hits []credential) {
+	if len(hits) == 0 {
+		fmt.Println("No credential patterns found.")
+		return
+	}
+
+	type sessionGroup struct {
+		session string
+		start   time.Time
+		byLabel map[string][]credential
+	}
+	type projectGroup struct {
+		sessions map[string]*sessionGroup
+		order    []string
+	}
+
+	projects := map[string]*projectGroup{}
+	var projOrder []string
+
+	for _, h := range hits {
+		pg, ok := projects[h.Project]
+		if !ok {
+			pg = &projectGroup{sessions: map[string]*sessionGroup{}}
+			projects[h.Project] = pg
+			projOrder = append(projOrder, h.Project)
+		}
+		sg, ok := pg.sessions[h.Session]
+		if !ok {
+			sg = &sessionGroup{session: h.Session, start: h.Start, byLabel: map[string][]credential{}}
+			pg.sessions[h.Session] = sg
+			pg.order = append(pg.order, h.Session)
+		}
+		sg.byLabel[h.Label] = append(sg.byLabel[h.Label], h)
+	}
+
+	sort.Strings(projOrder)
+	total := len(hits)
+
+	fmt.Printf("\n  Credential scan — %d match%s across %d project%s\n",
+		total, plural(total), len(projOrder), plural(len(projOrder)))
+	fmt.Println(rule)
+
+	for _, proj := range projOrder {
+		pg := projects[proj]
+		fmt.Printf("\n  project  %s\n", projectDisplayName(proj))
+
+		sort.Slice(pg.order, func(i, j int) bool {
+			return pg.sessions[pg.order[i]].start.Before(pg.sessions[pg.order[j]].start)
+		})
+
+		for _, sess := range pg.order {
+			sg := pg.sessions[sess]
+			ts := ""
+			if !sg.start.IsZero() {
+				ts = sg.start.Format("2006-01-02")
+			}
+			fmt.Printf("  session  %s  %s\n", sg.session[:8], ts)
+
+			labels := make([]string, 0, len(sg.byLabel))
+			for l := range sg.byLabel {
+				labels = append(labels, l)
+			}
+			sort.Strings(labels)
+
+			for _, label := range labels {
+				creds := sg.byLabel[label]
+				if len(creds) > 3 {
+					creds = creds[:3]
+				}
+				fmt.Printf("    %-30s", label)
+				previews := make([]string, len(creds))
+				for i, c := range creds {
+					previews[i] = fmt.Sprintf("%s (%dc)", c.Preview, c.Len)
+				}
+				fmt.Println(strings.Join(previews, "  "))
+			}
+		}
+	}
+
+	fmt.Println()
+	fmt.Println(rule)
+	fmt.Printf("\n  Action: rotate any non-expired credentials listed above.\n\n")
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// projectDisplayName converts the slug "-Users-mukarram-work-foo" → "~/work/foo".
+func projectDisplayName(slug string) string {
+	parts := strings.Split(slug, "-")
+	for i, p := range parts {
+		if p == "work" || p == "Documents" || p == "Desktop" || p == "src" || p == "home" {
+			return "~/" + strings.Join(parts[i:], "/")
+		}
+	}
+	return slug
+}
