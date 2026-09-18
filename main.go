@@ -594,13 +594,13 @@ type totals struct {
 	Model              string  `json:"model"`
 	Calls              int     `json:"inference_calls"`
 	Turns              int     `json:"user_turns"`
-	P     int `json:"prompt"`
-	T     int `json:"tool_output"`
-	A     int `json:"attachment"`
-	X     int `json:"replay"`
-	MText int `json:"model_output_text"`
-	MTool int `json:"model_output_tool_calls"`
-	R     int `json:"reasoning"`
+	P                  int     `json:"prompt"`
+	T                  int     `json:"tool_output"`
+	A                  int     `json:"attachment"`
+	X                  int     `json:"replay"`
+	MText              int     `json:"model_output_text"`
+	MTool              int     `json:"model_output_tool_calls"`
+	R                  int     `json:"reasoning"`
 	Chatting           int     `json:"chatting"`
 	AgentVisible       int     `json:"agent_visible"`
 	TrajectoryInput    int     `json:"trajectory_input"`
@@ -687,22 +687,30 @@ var rule = "  " + strings.Repeat("─", 68)
 
 // ---------- main ----------
 
-// firstTimestamp returns the first "timestamp" a transcript records, or the
-// zero time. The scanner only wants it for a date label, so this beats paying
-// for parseClaude's tokenisation.
-func firstTimestamp(data []byte) time.Time {
-	for len(data) > 0 {
+// firstMeta returns the first timestamp and the first cwd a transcript records.
+// They do not always share a line — a queue-operation record carries a
+// timestamp and no cwd — so each is taken from wherever it first appears. The
+// scanner only wants them for a date label and a display name, so this beats
+// paying for parseClaude's tokenisation.
+func firstMeta(data []byte) (ts time.Time, cwd string) {
+	for len(data) > 0 && (ts.IsZero() || cwd == "") {
 		var line []byte
 		line, data, _ = bytes.Cut(data, []byte("\n"))
 		var r struct {
 			Timestamp string `json:"timestamp"`
+			CWD       string `json:"cwd"`
 		}
-		if json.Unmarshal(line, &r) == nil && r.Timestamp != "" {
-			t, _ := time.Parse(time.RFC3339, r.Timestamp)
-			return t
+		if json.Unmarshal(line, &r) != nil {
+			continue
+		}
+		if ts.IsZero() && r.Timestamp != "" {
+			ts, _ = time.Parse(time.RFC3339, r.Timestamp)
+		}
+		if cwd == "" {
+			cwd = r.CWD
 		}
 	}
-	return time.Time{}
+	return ts, cwd
 }
 
 // allProjects is every project directory Claude Code has recorded.
@@ -827,7 +835,8 @@ func main() {
 		id := strings.TrimSuffix(filepath.Base(f), ".jsonl")
 		proj := filepath.Base(filepath.Dir(f))
 		if *scanFlag {
-			tfiles = append(tfiles, traceFile{Project: proj, Session: id, Start: firstTimestamp(data), Path: f, Data: data})
+			ts, cwd := firstMeta(data)
+			tfiles = append(tfiles, traceFile{Project: proj, Session: id, Start: ts, CWD: cwd, Path: f, Data: data})
 		} else {
 			trajs := parseClaude(data, id)
 			all = append(all, trajs...)
