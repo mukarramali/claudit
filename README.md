@@ -40,6 +40,10 @@ claudit [-days N] [-here] [-json] [-scanner] [path...]
   -here     only the project in the current directory
   -json     machine-readable totals per session
   -scanner  scan traces for accidentally shared credentials
+
+  -scanner-ignore-iss   comma-separated JWT issuers to suppress, for the
+                        SSO tokens you already know about
+                        e.g. -scanner-ignore-iss https://sso.example.com
 ```
 
 ### What your setup costs you
@@ -137,8 +141,9 @@ $ ./claudit -scanner -here     # current project only
 
   project  ~/work/do-it-for-me
   session  e3b85756  2026-09-16
-    Bearer Token                  Bearer e…FCCQ (1217c)  Bearer e…lVFA (1217c)
-    JWT (iss: https://sso.staging.example.com/)eyJhbGci…FCCQ (1210c)
+  ~/.claude/projects/-Users-you-work-do-it-for-me/e3b85756-….jsonl
+    Bearer Token (iss: https://sso.staging.example.com/) Bearer e…FCCQ (1217c)
+    JWT (iss: https://sso.staging.example.com/) eyJhbGci…FCCQ (1210c)
 
   Action: rotate any non-expired credentials listed above.
 ```
@@ -158,7 +163,8 @@ Two detection passes run over every `.jsonl` file:
 
 Built-in false-positive suppression: Claude Code embeds its own API key as a
 JWT in every trace (`{"jti":"ApiKey:N"}`); these are detected and skipped
-automatically.
+automatically, including where they appear as `Bearer eyJ…`. The same applies
+to any issuer you pass to `-scanner-ignore-iss`.
 
 ### Scripting
 
