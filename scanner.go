@@ -93,6 +93,7 @@ var credPatterns = []credPattern{
 	{"GitHub Token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`)},
 	{"Anthropic Key", regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{40,}`)},
 	{"OpenAI Key", regexp.MustCompile(`sk-[A-Za-z0-9]{48,}`)},
+	{"Stripe Key", regexp.MustCompile(`(?:sk|rk)_live_[A-Za-z0-9]{24,}`)},
 	{"JWT", regexp.MustCompile(`eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`)},
 	{"DB Connection URL", regexp.MustCompile(`(?:postgres|mysql|mongodb|redis)://[^:"\s]+:[^@"'\s]+@[^"'\s]+`)},
 	{"Bearer Token", regexp.MustCompile(`[Bb]earer [A-Za-z0-9_.-]{20,}`)},
@@ -242,6 +243,25 @@ func jwtIssuer(token string) string {
 	return iss
 }
 
+// jwtLabel returns the label to report a JWT-bearing match under, or "" to
+// skip it: Claude Code embeds its own API key as a JWT in every trace, and
+// -scanner-ignore-iss suppresses whole issuers.
+func jwtLabel(base, token string, ignoreISS []string) string {
+	if isInternalJWT(token) {
+		return ""
+	}
+	iss := jwtIssuer(token)
+	for _, ig := range ignoreISS {
+		if strings.EqualFold(strings.TrimRight(iss, "/"), strings.TrimRight(ig, "/")) {
+			return ""
+		}
+	}
+	if iss != "" {
+		return fmt.Sprintf("%s (iss: %s)", base, iss)
+	}
+	return base
+}
+
 // ---------- scanner entry point ----------
 
 func scanTraces(files []traceFile, ignoreISS []string) []credential {
@@ -272,23 +292,19 @@ func scanTraces(files []traceFile, ignoreISS []string) []credential {
 		// Pass 1: known-format patterns.
 		for _, cp := range credPatterns {
 			for _, m := range cp.Re.FindAllString(text, -1) {
-				label := cp.Label
-				if cp.Label == "JWT" {
-					if isInternalJWT(m) {
-						continue
-					}
-					iss := jwtIssuer(m)
-					for _, ignored := range ignoreISS {
-						if strings.EqualFold(strings.TrimRight(iss, "/"), strings.TrimRight(ignored, "/")) {
-							goto nextMatch
-						}
-					}
-					if iss != "" {
-						label = fmt.Sprintf("JWT (iss: %s)", iss)
-					}
+				var label string
+				switch cp.Label {
+				case "JWT":
+					label = jwtLabel(cp.Label, m, ignoreISS)
+				case "Bearer Token":
+					label = jwtLabel(cp.Label, m[7:], ignoreISS) // strip "Bearer " or "bearer "
+				default:
+					label = cp.Label
+				}
+				if label == "" {
+					continue
 				}
 				add(&hits, tf, label, m)
-			nextMatch:
 			}
 		}
 
