@@ -14,28 +14,32 @@ import (
 	"unicode"
 )
 
-var errOut = os.Stderr
-
 // spinner prints a braille spinner with msg to stderr until the returned stop
-// function is called, which erases the line.
+// function is called, which erases the line. No-op when stderr is not a terminal.
 func spinner(msg string) func() {
+	fi, err := os.Stderr.Stat()
+	if err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+		return func() {} // not a terminal: stay out of redirected output
+	}
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	done := make(chan struct{})
+	done, stopped := make(chan struct{}), make(chan struct{})
 	go func() {
+		defer close(stopped)
 		i := 0
 		for {
 			select {
 			case <-done:
 				return
 			case <-time.After(80 * time.Millisecond):
-				fmt.Fprintf(errOut, "\r%s %s", frames[i%len(frames)], msg)
+				fmt.Fprintf(os.Stderr, "\r%s %s", frames[i%len(frames)], msg)
 				i++
 			}
 		}
 	}()
 	return func() {
 		close(done)
-		fmt.Fprintf(errOut, "\r%s\r", strings.Repeat(" ", len(msg)+3))
+		<-stopped
+		fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", len(msg)+3))
 	}
 }
 
@@ -126,9 +130,9 @@ func shannonEntropy(s string) float64 {
 	return h
 }
 
-// charsetEntropy returns the entropy and whether the string is confined to a
-// known high-density alphabet (base64 or hex). Confined strings need a lower
-// threshold because their theoretical max is already lower than free text.
+// charsetKind tags a string's alphabet. Confined sets (hex, base64) have a
+// lower theoretical entropy ceiling than free text, so isHighEntropy applies
+// a tighter threshold to them.
 type charsetKind int
 
 const (
@@ -411,7 +415,7 @@ func printScanReport(hits []credential, files []traceFile) {
 				ts = sg.start.Format("2006-01-02")
 			}
 			link := fileLink(pathOf[sg.session])
-			fmt.Printf("  session  %s  %s\n  %s\n", sg.session[:8], ts, link)
+			fmt.Printf("  session  %s  %s\n  %s\n", sg.session[:min(len(sg.session), 8)], ts, link)
 
 			labels := make([]string, 0, len(sg.byLabel))
 			for l := range sg.byLabel {
