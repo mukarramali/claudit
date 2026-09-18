@@ -175,7 +175,7 @@ func section(title, note string, gs []*group, grand float64) {
 	row("subtotal", 0, sub, grand)
 }
 
-func insights(all []Trajectory, since time.Time, days int) {
+func insights(all []Trajectory, since time.Time, days int, scope string) {
 	if days <= 0 {
 		since = time.Time{} // -days 0 means everything
 	}
@@ -209,14 +209,21 @@ func insights(all []Trajectory, since time.Time, days int) {
 		by[g.Kind] = append(by[g.Kind], g)
 	}
 
-	span := ""
-	if days > 0 {
-		span = fmt.Sprintf("%s → %s · ", since.Format("2 Jan"), time.Now().Format("2 Jan 2006"))
-	} else if !oldest.IsZero() {
-		span = fmt.Sprintf("%s → %s · ", oldest.Format("2 Jan"), newest.Format("2 Jan 2006"))
+	period := ""
+	switch {
+	case days == 1:
+		period = "today"
+	case days > 1:
+		period = fmt.Sprintf("last %d days", days)
+	case !oldest.IsZero():
+		period = fmt.Sprintf("%s → %s", oldest.Format("2 Jan"), newest.Format("2 Jan 2006"))
 	}
-	fmt.Printf("\n%s\n  YOUR CLAUDE CODE SPEND\n  %s%s sessions · %s model calls · %s\n%s\n",
-		rule, span, comma(sessions), comma(calls), money(grand), rule)
+	label := period
+	if scope != "" {
+		label = period + " · " + scope
+	}
+	fmt.Printf("\n%s\n  YOUR CLAUDE CODE SPEND\n  %s\n  %s sessions · %s model calls · %s\n%s\n",
+		rule, label, comma(sessions), comma(calls), money(grand), rule)
 
 	section("ALWAYS IN CONTEXT", "  prepended to every single call", by[scaffoldKind], grand)
 	section("YOUR CUSTOMISATIONS", "  hooks, CLAUDE.md, listings, skill bodies", by[setup], grand)

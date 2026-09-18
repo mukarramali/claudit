@@ -733,14 +733,17 @@ func transcripts(args []string) ([]string, error) {
 func main() {
 	hereFlag := flag.Bool("here", false, "only the project in the current directory")
 	asJSON := flag.Bool("json", false, "machine-readable totals per session")
-	days := flag.Int("days", 30, "how far back to look (0 = all time)")
+	days := flag.Int("days", 1, "how far back to look (0 = all time)")
 	flag.Parse()
 
 	var args []string
+	scope := "all projects"
 	if *hereFlag {
 		args = nil // transcripts(nil) resolves cwd slug
+		scope = "this project"
 	} else if rest := flag.Args(); len(rest) > 0 {
 		args = rest
+		scope = "this project"
 	} else {
 		args = allProjects()
 	}
@@ -777,5 +780,5 @@ func main() {
 		return
 	}
 
-	insights(all, time.Now().AddDate(0, 0, -*days), *days)
+	insights(all, time.Now().AddDate(0, 0, -*days), *days, scope)
 }
