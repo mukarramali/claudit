@@ -785,7 +785,7 @@ func main() {
 
 	if *scanFlag {
 		hits := scanTraces(tfiles)
-		printScanReport(hits)
+		printScanReport(hits, tfiles)
 		return
 	}
 

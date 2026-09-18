@@ -221,9 +221,31 @@ func redact(s string) string {
 	return s[:8] + "…" + s[len(s)-4:]
 }
 
-func printScanReport(hits []credential) {
+func printScanReport(hits []credential, files []traceFile) {
+	var earliest, latest time.Time
+	for _, tf := range files {
+		if tf.Start.IsZero() {
+			continue
+		}
+		if earliest.IsZero() || tf.Start.Before(earliest) {
+			earliest = tf.Start
+		}
+		if tf.Start.After(latest) {
+			latest = tf.Start
+		}
+	}
+	days := 0
+	if !earliest.IsZero() {
+		days = int(latest.Sub(earliest).Hours()/24) + 1
+	}
+	rangeStr := ""
+	if !earliest.IsZero() {
+		rangeStr = fmt.Sprintf(" · %s – %s (%d day%s)",
+			earliest.Format("2006-01-02"), latest.Format("2006-01-02"), days, plural(days))
+	}
+
 	if len(hits) == 0 {
-		fmt.Println("No credential patterns found.")
+		fmt.Printf("No credential patterns found%s.\n", rangeStr)
 		return
 	}
 
@@ -259,8 +281,8 @@ func printScanReport(hits []credential) {
 	sort.Strings(projOrder)
 	total := len(hits)
 
-	fmt.Printf("\n  Credential scan — %d match%s across %d project%s\n",
-		total, plural(total), len(projOrder), plural(len(projOrder)))
+	fmt.Printf("\n  Credential scan — %d match%s across %d project%s%s\n",
+		total, plural(total), len(projOrder), plural(len(projOrder)), rangeStr)
 	fmt.Println(rule)
 
 	for _, proj := range projOrder {
