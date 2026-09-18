@@ -24,7 +24,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkoukk/tiktoken-go"
+	tiktoken "github.com/pkoukk/tiktoken-go"
+	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader"
 )
 
 // ---------- agent-neutral model ----------
@@ -165,7 +166,9 @@ func (t Trajectory) rounds(i item) int {
 // ponytail: o200k_base is the wrong tokenizer family for Claude and no public
 // Claude BPE exists. The systematic bias is why the report prints the
 // local/provider ratio instead of pretending the local number is truth.
+// The table is embedded via go:embed so nothing is fetched at runtime.
 var encoding = sync.OnceValue(func() *tiktoken.Tiktoken {
+	tiktoken.SetBpeLoader(tiktoken_loader.NewOfflineLoader())
 	enc, err := tiktoken.GetEncoding("o200k_base")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tokenizer: %v\n", err)
