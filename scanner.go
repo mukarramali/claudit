@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 var errOut = os.Stderr
@@ -56,10 +58,26 @@ type traceFile struct {
 	Data    []byte
 }
 
+// printableOnly replaces non-printable runes with '.' so previews and labels
+// cannot inject terminal escape sequences.
+func printableOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('.')
+		}
+	}
+	return b.String()
+}
+
 // fileLink returns an OSC 8 terminal hyperlink for the trace file.
 // Terminals that don't support it render the plain path.
 func fileLink(path string) string {
-	return fmt.Sprintf("\x1b]8;;file://%s\x1b\\%s\x1b]8;;\x1b\\", path, path)
+	u := (&url.URL{Scheme: "file", Path: path}).String()
+	label := printableOnly(path)
+	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", u, label)
 }
 
 // ---------- known-format patterns ----------
@@ -285,10 +303,11 @@ func scanTraces(files []traceFile, ignoreISS []string) []credential {
 // ---------- output ----------
 
 func redact(s string) string {
-	if len(s) <= 12 {
-		return strings.Repeat("*", len(s))
+	r := []rune(printableOnly(s))
+	if len(r) <= 12 {
+		return strings.Repeat("*", len(r))
 	}
-	return s[:8] + "…" + s[len(s)-4:]
+	return string(r[:8]) + "…" + string(r[len(r)-4:])
 }
 
 func printScanReport(hits []credential, files []traceFile) {
