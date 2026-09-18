@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/base64"
 	"encoding/json"
@@ -690,6 +691,24 @@ var rule = "  " + strings.Repeat("─", 68)
 
 // ---------- main ----------
 
+// firstTimestamp returns the first "timestamp" a transcript records, or the
+// zero time. The scanner only wants it for a date label, so this beats paying
+// for parseClaude's tokenisation.
+func firstTimestamp(data []byte) time.Time {
+	for len(data) > 0 {
+		var line []byte
+		line, data, _ = bytes.Cut(data, []byte("\n"))
+		var r struct {
+			Timestamp string `json:"timestamp"`
+		}
+		if json.Unmarshal(line, &r) == nil && r.Timestamp != "" {
+			t, _ := time.Parse(time.RFC3339, r.Timestamp)
+			return t
+		}
+	}
+	return time.Time{}
+}
+
 // allProjects is every project directory Claude Code has recorded.
 func allProjects() []string {
 	home, err := os.UserHomeDir()
@@ -776,11 +795,34 @@ func main() {
 		}
 	}
 
+	// Compute the look-back window once; the mtime check, scanner, and insights
+	// all derive from it.
+	since := time.Now().AddDate(0, 0, -*days)
+	if *days <= 0 {
+		since = time.Time{}
+	}
+
 	stopSpinner := spinner("Loading... Classic!")
 
 	var all []Trajectory
 	var tfiles []traceFile
+	skipped := 0
 	for _, f := range paths {
+		// ponytail: mtime is the ceiling on a file's newest record — a file
+		// unmodified since before the window cannot contain an in-window session.
+		// (A file with future-dated records could be wrongly skipped, but that
+		// doesn't occur in practice.)
+		if !since.IsZero() {
+			fi, err := os.Stat(f)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			if fi.ModTime().Before(since) {
+				skipped++
+				continue
+			}
+		}
 		data, err := os.ReadFile(f)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -788,20 +830,21 @@ func main() {
 		}
 		id := strings.TrimSuffix(filepath.Base(f), ".jsonl")
 		proj := filepath.Base(filepath.Dir(f))
-		trajs := parseClaude(data, id)
-		all = append(all, trajs...)
-
-		start := time.Time{}
-		if len(trajs) > 0 && len(trajs[0].Calls) > 0 {
-			start = trajs[0].Start
+		if *scanFlag {
+			tfiles = append(tfiles, traceFile{Project: proj, Session: id, Start: firstTimestamp(data), Path: f, Data: data})
+		} else {
+			trajs := parseClaude(data, id)
+			all = append(all, trajs...)
 		}
-		tfiles = append(tfiles, traceFile{Project: proj, Session: id, Start: start, Path: f, Data: data})
 	}
 
 	if *scanFlag {
 		hits := scanTraces(tfiles, ignoreList)
 		stopSpinner()
 		printScanReport(hits, tfiles)
+		if skipped > 0 {
+			fmt.Printf("(%d older file%s skipped; -days 0 to scan everything)\n", skipped, plural(skipped))
+		}
 		return
 	}
 
@@ -810,6 +853,9 @@ func main() {
 	if *asJSON {
 		out := make([]totals, 0, len(all))
 		for _, t := range all {
+			if !t.Start.IsZero() && t.Start.Before(since) {
+				continue // same window rule insights applies
+			}
 			out = append(out, sum(t))
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -818,5 +864,5 @@ func main() {
 		return
 	}
 
-	insights(all, time.Now().AddDate(0, 0, -*days), *days, scope)
+	insights(all, since, *days, scope)
 }

@@ -35,7 +35,8 @@ claudit [-days N] [-here] [-json] [-scanner] [path...]
 
   path      a .jsonl transcript, or a ~/.claude/projects/<slug> directory
             default: every project; -here for the current one only
-  -days     how far back to look (default 1 = today, 0 for everything)
+  -days     how far back to look (default 1 = today, 0 for everything);
+            applies to every mode, including -json and -scanner
   -here     only the project in the current directory
   -json     machine-readable totals per session
   -scanner  scan traces for accidentally shared credentials
@@ -162,13 +163,13 @@ automatically.
 ### Scripting
 
 ```sh
-$ claudit -json ~/.claude/projects/*/ | jq -r '
+$ claudit -json -days 0 | jq -r '
     sort_by(-.cost_usd) | .[:5][] | "\(.session)  $\(.cost_usd|floor)"'
 ```
 
 ```sh
-# what has this month cost so far?
-$ claudit -json ~/.claude/projects/*/ | jq '[.[].cost_usd] | add'
+# what have the last 30 days cost?
+$ claudit -json -days 30 | jq '[.[].cost_usd] | add'
 ```
 
 ## Reading the numbers
