@@ -734,6 +734,7 @@ func main() {
 	hereFlag := flag.Bool("here", false, "only the project in the current directory")
 	asJSON := flag.Bool("json", false, "machine-readable totals per session")
 	days := flag.Int("days", 1, "how far back to look (0 = all time)")
+	scanFlag := flag.Bool("scanner", false, "scan traces for accidentally shared credentials")
 	flag.Parse()
 
 	var args []string
@@ -752,25 +753,40 @@ func main() {
 		}
 	}
 
-	files, err := transcripts(args)
+	paths, err := transcripts(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "no transcripts found")
 		os.Exit(1)
 	}
-	if len(files) == 0 {
+	if len(paths) == 0 {
 		fmt.Fprintln(os.Stderr, "no transcripts found")
 		os.Exit(1)
 	}
 
 	var all []Trajectory
-	for _, f := range files {
+	var tfiles []traceFile
+	for _, f := range paths {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		id := strings.TrimSuffix(filepath.Base(f), ".jsonl")
-		all = append(all, parseClaude(data, id)...)
+		proj := filepath.Base(filepath.Dir(f))
+		trajs := parseClaude(data, id)
+		all = append(all, trajs...)
+
+		start := time.Time{}
+		if len(trajs) > 0 && len(trajs[0].Calls) > 0 {
+			start = trajs[0].Start
+		}
+		tfiles = append(tfiles, traceFile{Project: proj, Session: id, Start: start, Data: data})
+	}
+
+	if *scanFlag {
+		hits := scanTraces(tfiles)
+		printScanReport(hits)
+		return
 	}
 
 	if *asJSON {
