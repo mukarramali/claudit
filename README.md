@@ -127,7 +127,7 @@ $ ./claudit -scanner -here     # current project only
   project  ~/work/do-it-for-me
   session  e3b85756  2026-09-16
     Bearer Token                  Bearer e…FCCQ (1217c)  Bearer e…lVFA (1217c)
-    JWT (iss: https://sso.staging.taxfix.com/)eyJhbGci…FCCQ (1210c)
+    JWT (iss: https://sso.staging.example.com/)eyJhbGci…FCCQ (1210c)
 
   Action: rotate any non-expired credentials listed above.
 ```
