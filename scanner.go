@@ -58,6 +58,7 @@ type traceFile struct {
 	Project string
 	Session string
 	Start   time.Time
+	CWD     string
 	Path    string // absolute path to the .jsonl file
 	Data    []byte
 }
@@ -358,10 +359,14 @@ func printScanReport(hits []credential, files []traceFile) {
 		return
 	}
 
-	// build a path index: session id → file path
+	// build indexes: session id → file path, project slug → cwd
 	pathOf := map[string]string{}
+	cwdOf := map[string]string{}
 	for _, tf := range files {
 		pathOf[tf.Session] = tf.Path
+		if tf.CWD != "" && cwdOf[tf.Project] == "" {
+			cwdOf[tf.Project] = tf.CWD
+		}
 	}
 
 	type sessionGroup struct {
@@ -402,7 +407,7 @@ func printScanReport(hits []credential, files []traceFile) {
 
 	for _, proj := range projOrder {
 		pg := projects[proj]
-		fmt.Printf("\n  project  %s\n", projectDisplayName(proj))
+		fmt.Printf("\n  project  %s\n", projectDisplayName(proj, cwdOf[proj]))
 
 		sort.Slice(pg.order, func(i, j int) bool {
 			return pg.sessions[pg.order[i]].start.Before(pg.sessions[pg.order[j]].start)
@@ -450,13 +455,15 @@ func plural(n int) string {
 	return "s"
 }
 
-// projectDisplayName converts the slug "-Users-mukarram-work-foo" → "~/work/foo".
-func projectDisplayName(slug string) string {
-	parts := strings.Split(slug, "-")
-	for i, p := range parts {
-		if p == "work" || p == "Documents" || p == "Desktop" || p == "src" || p == "home" {
-			return "~/" + strings.Join(parts[i:], "/")
-		}
+// projectDisplayName prefers the cwd the transcript recorded. The directory
+// slug cannot be reversed — Claude Code maps /, . and _ all to - — so it is
+// only a fallback.
+func projectDisplayName(slug, cwd string) string {
+	if cwd == "" {
+		return slug
 	}
-	return slug
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(cwd, home) {
+		return "~" + strings.TrimPrefix(cwd, home)
+	}
+	return cwd
 }
