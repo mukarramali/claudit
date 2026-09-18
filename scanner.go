@@ -5,11 +5,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 )
+
+var errOut = os.Stderr
+
+// spinner prints a braille spinner with msg to stderr until the returned stop
+// function is called, which erases the line.
+func spinner(msg string) func() {
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	done := make(chan struct{})
+	go func() {
+		i := 0
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(80 * time.Millisecond):
+				fmt.Fprintf(errOut, "\r%s %s", frames[i%len(frames)], msg)
+				i++
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		fmt.Fprintf(errOut, "\r%s\r", strings.Repeat(" ", len(msg)+3))
+	}
+}
 
 // credential is a single pattern hit inside a trace file.
 type credential struct {
