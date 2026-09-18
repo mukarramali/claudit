@@ -746,11 +746,15 @@ func main() {
 		scope = "this project"
 	} else {
 		args = allProjects()
+		if len(args) == 0 {
+			fmt.Fprintln(os.Stderr, "no transcripts found (is Claude Code installed and has it been used?)")
+			os.Exit(1)
+		}
 	}
 
 	files, err := transcripts(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "no transcripts found")
 		os.Exit(1)
 	}
 	if len(files) == 0 {
