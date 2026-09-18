@@ -38,7 +38,7 @@ type credPattern struct {
 }
 
 var credPatterns = []credPattern{
-	{"Private Key", regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY`)},
+	{"Private Key", regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----\n[A-Za-z0-9+/=\n]{40,}-----END`)},
 	{"GitHub Token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`)},
 	{"Anthropic Key", regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{40,}`)},
 	{"OpenAI Key", regexp.MustCompile(`sk-[A-Za-z0-9]{48,}`)},
