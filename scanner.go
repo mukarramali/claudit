@@ -193,7 +193,7 @@ func jwtIssuer(token string) string {
 
 // ---------- scanner entry point ----------
 
-func scanTraces(files []traceFile) []credential {
+func scanTraces(files []traceFile, ignoreISS []string) []credential {
 	type dedupKey struct{ session, label, preview string }
 	seen := map[dedupKey]bool{}
 
@@ -226,11 +226,18 @@ func scanTraces(files []traceFile) []credential {
 					if isInternalJWT(m) {
 						continue
 					}
-					if iss := jwtIssuer(m); iss != "" {
+					iss := jwtIssuer(m)
+					for _, ignored := range ignoreISS {
+						if strings.EqualFold(strings.TrimRight(iss, "/"), strings.TrimRight(ignored, "/")) {
+							goto nextMatch
+						}
+					}
+					if iss != "" {
 						label = fmt.Sprintf("JWT (iss: %s)", iss)
 					}
 				}
 				add(&hits, tf, label, m)
+			nextMatch:
 			}
 		}
 
