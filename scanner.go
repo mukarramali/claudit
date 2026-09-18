@@ -142,10 +142,11 @@ func scanEntropy(text string) []struct{ label, value string } {
 
 // ---------- JWT enrichment ----------
 
-func jwtIssuer(token string) string {
+// jwtPayload decodes the payload claims of a JWT, or nil on failure.
+func jwtPayload(token string) map[string]json.RawMessage {
 	parts := strings.SplitN(token, ".", 3)
 	if len(parts) < 2 {
-		return ""
+		return nil
 	}
 	raw := parts[1]
 	if n := len(raw) % 4; n != 0 {
@@ -153,15 +154,41 @@ func jwtIssuer(token string) string {
 	}
 	b, err := base64.URLEncoding.DecodeString(raw)
 	if err != nil {
+		return nil
+	}
+	var claims map[string]json.RawMessage
+	if json.Unmarshal(b, &claims) != nil {
+		return nil
+	}
+	return claims
+}
+
+// isInternalJWT returns true for JWTs that belong to Claude Code itself rather
+// than being user credentials — specifically tokens whose payload contains only
+// a jti claim (no iss/sub/exp), which is the shape of Anthropic's API key token
+// embedded in every trace.
+func isInternalJWT(token string) bool {
+	claims := jwtPayload(token)
+	if claims == nil {
+		return false
+	}
+	_, hasJti := claims["jti"]
+	_, hasIss := claims["iss"]
+	_, hasSub := claims["sub"]
+	_, hasExp := claims["exp"]
+	return hasJti && !hasIss && !hasSub && !hasExp
+}
+
+func jwtIssuer(token string) string {
+	claims := jwtPayload(token)
+	if claims == nil {
 		return ""
 	}
-	var payload struct {
-		Iss string `json:"iss"`
+	var iss string
+	if v, ok := claims["iss"]; ok {
+		json.Unmarshal(v, &iss)
 	}
-	if json.Unmarshal(b, &payload) != nil {
-		return ""
-	}
-	return payload.Iss
+	return iss
 }
 
 // ---------- scanner entry point ----------
@@ -196,6 +223,9 @@ func scanTraces(files []traceFile) []credential {
 			for _, m := range cp.Re.FindAllString(text, -1) {
 				label := cp.Label
 				if cp.Label == "JWT" {
+					if isInternalJWT(m) {
+						continue
+					}
 					if iss := jwtIssuer(m); iss != "" {
 						label = fmt.Sprintf("JWT (iss: %s)", iss)
 					}
