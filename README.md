@@ -9,14 +9,24 @@ from `~/.claude/projects/**/*.jsonl` rather than taken on trust.
 
 > Inspired by [Martin Monperrus](https://www.monperrus.net/martin/measuring-tokens)
 
+## Everything is local
+
+`claudit` runs entirely on your machine. It reads `~/.claude/projects/**/*.jsonl`
+plus the two `CLAUDE.md` files (yours and the project-level one) to estimate their
+token cost. It makes no network requests of any kind, sends nothing anywhere, and
+writes nothing to disk. It needs no API key or login. The provider usage figures in
+the report come directly from the transcript JSON that Claude Code writes locally —
+nothing is fetched from an API.
+
 ## Build
 
 ```sh
 go build -o claudit .
 ```
 
-One dependency (`tiktoken-go`). The `o200k_base` table downloads once and caches;
-set `TIKTOKEN_CACHE_DIR` to control where.
+Two direct dependencies: `tiktoken-go` and `tiktoken-go-loader`. The `o200k_base`
+vocabulary table is compiled into the binary — nothing is downloaded at runtime;
+this is what makes the binary ~7 MB larger.
 
 ## Usage
 
@@ -109,8 +119,8 @@ can be divided across them — share of replay is share of the bill. A 2k-token
 hook that loads at session start costs far more than a 20k tool result read once
 near the end, and this is the view that shows it.
 
-Safe to share with a colleague: it prints names and token counts, never
-conversation content.
+The spend report is safe to share with a colleague: it prints session names and
+token counts, never conversation content.
 
 ### Credential scanner
 
@@ -131,6 +141,9 @@ $ ./claudit -scanner -here     # current project only
 
   Action: rotate any non-expired credentials listed above.
 ```
+
+Scanner output contains partial secrets (first 8 and last 4 characters of each
+match). Do not paste it into a chat, ticket, or PR.
 
 Two detection passes run over every `.jsonl` file:
 
