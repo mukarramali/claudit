@@ -21,13 +21,14 @@ set `TIKTOKEN_CACHE_DIR` to control where.
 ## Usage
 
 ```
-claudit [-days N] [-here] [-json] [path...]
+claudit [-days N] [-here] [-json] [-scanner] [path...]
 
-  path    a .jsonl transcript, or a ~/.claude/projects/<slug> directory
-          default: every project; -here for the current one only
-  -days   how far back to look (default 1 = today, 0 for everything)
-  -here   only the project in the current directory
-  -json   machine-readable totals per session
+  path      a .jsonl transcript, or a ~/.claude/projects/<slug> directory
+            default: every project; -here for the current one only
+  -days     how far back to look (default 1 = today, 0 for everything)
+  -here     only the project in the current directory
+  -json     machine-readable totals per session
+  -scanner  scan traces for accidentally shared credentials
 ```
 
 ### What your setup costs you
@@ -110,6 +111,40 @@ near the end, and this is the view that shows it.
 
 Safe to share with a colleague: it prints names and token counts, never
 conversation content.
+
+### Credential scanner
+
+```sh
+$ ./claudit -scanner           # today, every project
+$ ./claudit -scanner -days 0   # all time
+$ ./claudit -scanner -here     # current project only
+```
+
+```
+  Credential scan — 9 matches across 3 projects · 2026-06-16 – 2026-09-18 (94 days)
+  ────────────────────────────────────────────────────────────────────
+
+  project  ~/work/do-it-for-me
+  session  e3b85756  2026-09-16
+    Bearer Token                  Bearer e…FCCQ (1217c)  Bearer e…lVFA (1217c)
+    JWT (iss: https://sso.staging.taxfix.com/)eyJhbGci…FCCQ (1210c)
+
+  Action: rotate any non-expired credentials listed above.
+```
+
+Two detection passes run over every `.jsonl` file:
+
+1. **Known-format patterns** — regex matches for things with a recognisable
+   prefix regardless of context: JWTs, GitHub tokens, Bearer tokens, Stripe
+   keys, Anthropic/OpenAI keys, private key PEM blocks, DB connection URLs.
+2. **Shannon entropy** — finds `"key": "value"` pairs where the key name looks
+   secret-sounding (`password`, `secret`, `api_key`, `client_secret`, …) and
+   the value has high entropy (>4.5 bits/char for base64, >4.8 for general
+   text). Catches novel or internal secrets with no recognisable prefix.
+
+Built-in false-positive suppression: Claude Code embeds its own API key as a
+JWT in every trace (`{"jti":"ApiKey:N"}`); these are detected and skipped
+automatically.
 
 ### Scripting
 
