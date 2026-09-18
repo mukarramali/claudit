@@ -735,6 +735,7 @@ func main() {
 	asJSON := flag.Bool("json", false, "machine-readable totals per session")
 	days := flag.Int("days", 1, "how far back to look (0 = all time)")
 	scanFlag := flag.Bool("scanner", false, "scan traces for accidentally shared credentials")
+	ignoreISS := flag.String("scanner-ignore-iss", "", "comma-separated JWT issuers to suppress (e.g. https://sso.example.com)")
 	flag.Parse()
 
 	var args []string
@@ -784,7 +785,13 @@ func main() {
 	}
 
 	if *scanFlag {
-		hits := scanTraces(tfiles)
+		var ignoreList []string
+		for _, s := range strings.Split(*ignoreISS, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				ignoreList = append(ignoreList, s)
+			}
+		}
+		hits := scanTraces(tfiles, ignoreList)
 		printScanReport(hits, tfiles)
 		return
 	}
