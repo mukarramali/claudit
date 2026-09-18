@@ -21,14 +21,15 @@ set `TIKTOKEN_CACHE_DIR` to control where.
 ## Usage
 
 ```
-claudit [-v] [-json] [path...]      one session: where the money went
-claudit insights [-days N] [path...]  your setup: what it costs you
+claudit [-v] [-json] [path...]           one session: where the money went
+claudit insights [-days N] [-here] [path...]  your setup: what it costs you
 
   path    a .jsonl transcript, or a ~/.claude/projects/<slug> directory
           default: the project matching $PWD; insights defaults to every project
   -v      per-inference-call table
   -json   machine-readable output
-  -days   insights: how far back to look (default 30, 0 for everything)
+  -days   insights: how far back to look (default 1 = today, 0 for everything)
+  -here   insights: only the project in the current directory
 ```
 
 ### Audit the session you're in
@@ -82,7 +83,9 @@ models are priced individually and summed — no single rate is applied to the m
 ### Personal insights — what your own setup costs
 
 ```sh
-$ ./claudit insights            # last 30 days, every project; -days 0 for all time
+$ ./claudit insights            # today, every project
+$ ./claudit insights -days 30   # last 30 days; -days 0 for all time
+$ ./claudit insights -here      # today, current project only
 ```
 
 The main report says where the money went. `insights` says _whose fault it is_ —
@@ -91,7 +94,8 @@ load, the tools you reach for.
 
 ```
   YOUR CLAUDE CODE SPEND
-  14 Aug → 12 Sep 2026 · 111 sessions · 2,642 model calls · $168
+  14 Aug → 12 Sep 2026 · all projects
+  111 sessions · 2,642 model calls · $168
 
   ALWAYS IN CONTEXT                            tokens      cost  share
     prepended to every single call
