@@ -772,7 +772,7 @@ func main() {
 				ignoreList = append(ignoreList, s)
 			}
 		}
-		stopSpinner = spinner("Loading...(classic ;))")
+		stopSpinner = spinner("Loading... Classic!")
 	}
 
 	var all []Trajectory
