@@ -52,7 +52,14 @@ type traceFile struct {
 	Project string
 	Session string
 	Start   time.Time
+	Path    string // absolute path to the .jsonl file
 	Data    []byte
+}
+
+// fileLink returns an OSC 8 terminal hyperlink for the trace file.
+// Terminals that don't support it render the plain path.
+func fileLink(path string) string {
+	return fmt.Sprintf("\x1b]8;;file://%s\x1b\\%s\x1b]8;;\x1b\\", path, path)
 }
 
 // ---------- known-format patterns ----------
@@ -312,6 +319,12 @@ func printScanReport(hits []credential, files []traceFile) {
 		return
 	}
 
+	// build a path index: session id → file path
+	pathOf := map[string]string{}
+	for _, tf := range files {
+		pathOf[tf.Session] = tf.Path
+	}
+
 	type sessionGroup struct {
 		session string
 		start   time.Time
@@ -362,7 +375,8 @@ func printScanReport(hits []credential, files []traceFile) {
 			if !sg.start.IsZero() {
 				ts = sg.start.Format("2006-01-02")
 			}
-			fmt.Printf("  session  %s  %s\n", sg.session[:8], ts)
+			link := fileLink(pathOf[sg.session])
+			fmt.Printf("  session  %s  %s\n  %s\n", sg.session[:8], ts, link)
 
 			labels := make([]string, 0, len(sg.byLabel))
 			for l := range sg.byLabel {
