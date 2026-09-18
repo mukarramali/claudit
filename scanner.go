@@ -401,8 +401,12 @@ func printScanReport(hits []credential, files []traceFile) {
 	sort.Strings(projOrder)
 	total := len(hits)
 
-	fmt.Printf("\n  Credential scan — %d match%s across %d project%s%s\n",
-		total, plural(total), len(projOrder), plural(len(projOrder)), rangeStr)
+	matches := "matches"
+	if total == 1 {
+		matches = "match"
+	}
+	fmt.Printf("\n  Credential scan — %d %s across %d project%s%s\n",
+		total, matches, len(projOrder), plural(len(projOrder)), rangeStr)
 	fmt.Println(rule)
 
 	for _, proj := range projOrder {
@@ -433,12 +437,11 @@ func printScanReport(hits []credential, files []traceFile) {
 				if len(creds) > 3 {
 					creds = creds[:3]
 				}
-				fmt.Printf("    %-30s", label)
 				previews := make([]string, len(creds))
 				for i, c := range creds {
 					previews[i] = fmt.Sprintf("%s (%dc)", c.Preview, c.Len)
 				}
-				fmt.Println(strings.Join(previews, "  "))
+				fmt.Printf("    %-30s %s\n", label, strings.Join(previews, "  "))
 			}
 		}
 	}
