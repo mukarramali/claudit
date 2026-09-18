@@ -764,6 +764,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	var ignoreList []string
+	var stopSpinner func()
+	if *scanFlag {
+		for _, s := range strings.Split(*ignoreISS, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				ignoreList = append(ignoreList, s)
+			}
+		}
+		stopSpinner = spinner("Loading...(classic ;))")
+	}
+
 	var all []Trajectory
 	var tfiles []traceFile
 	for _, f := range paths {
@@ -785,15 +796,8 @@ func main() {
 	}
 
 	if *scanFlag {
-		var ignoreList []string
-		for _, s := range strings.Split(*ignoreISS, ",") {
-			if s = strings.TrimSpace(s); s != "" {
-				ignoreList = append(ignoreList, s)
-			}
-		}
-		stop := spinner("Loading...(classic ;))")
 		hits := scanTraces(tfiles, ignoreList)
-		stop()
+		stopSpinner()
 		printScanReport(hits, tfiles)
 		return
 	}
