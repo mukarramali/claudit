@@ -1,7 +1,7 @@
 // claudit counts tokens locally from agent transcripts and compares the result
 // with the provider-reported usage embedded in those transcripts.
 //
-// Buckets and formulas follow docs/idea.md:
+// Buckets and formulas follow docs/plan.md:
 //
 //	input_n  = P_n + T_n + A_n + X_n
 //	output_n = M_text_n + M_tool_n + R_n
@@ -594,15 +594,13 @@ type totals struct {
 	Model              string  `json:"model"`
 	Calls              int     `json:"inference_calls"`
 	Turns              int     `json:"user_turns"`
-	P, T, A, X         int     `json:"-"`
-	MText, MTool, R    int     `json:"-"`
-	Prompt             int     `json:"prompt"`
-	ToolOutput         int     `json:"tool_output"`
-	Attachment         int     `json:"attachment"`
-	Replay             int     `json:"replay"`
-	ModelText          int     `json:"model_output_text"`
-	ModelToolCalls     int     `json:"model_output_tool_calls"`
-	Reasoning          int     `json:"reasoning"`
+	P     int `json:"prompt"`
+	T     int `json:"tool_output"`
+	A     int `json:"attachment"`
+	X     int `json:"replay"`
+	MText int `json:"model_output_text"`
+	MTool int `json:"model_output_tool_calls"`
+	R     int `json:"reasoning"`
 	Chatting           int     `json:"chatting"`
 	AgentVisible       int     `json:"agent_visible"`
 	TrajectoryInput    int     `json:"trajectory_input"`
@@ -650,8 +648,6 @@ func sum(t Trajectory) totals {
 			o.CallsWithoutUsage++
 		}
 	}
-	o.Prompt, o.ToolOutput, o.Attachment, o.Replay = o.P, o.T, o.A, o.X
-	o.ModelText, o.ModelToolCalls, o.Reasoning = o.MText, o.MTool, o.R
 	o.Chatting = o.P + o.MText
 	o.AgentVisible = o.P + o.T + o.MText + o.MTool
 	o.TrajectoryInput = o.P + o.T + o.A + o.X
@@ -816,7 +812,7 @@ func main() {
 			fi, err := os.Stat(f)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
+				continue
 			}
 			if fi.ModTime().Before(since) {
 				skipped++
@@ -826,7 +822,7 @@ func main() {
 		data, err := os.ReadFile(f)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			continue
 		}
 		id := strings.TrimSuffix(filepath.Base(f), ".jsonl")
 		proj := filepath.Base(filepath.Dir(f))
