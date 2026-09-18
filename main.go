@@ -791,7 +791,9 @@ func main() {
 				ignoreList = append(ignoreList, s)
 			}
 		}
+		stop := spinner("Loading...(classic ;))")
 		hits := scanTraces(tfiles, ignoreList)
+		stop()
 		printScanReport(hits, tfiles)
 		return
 	}
