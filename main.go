@@ -765,15 +765,15 @@ func main() {
 	}
 
 	var ignoreList []string
-	var stopSpinner func()
 	if *scanFlag {
 		for _, s := range strings.Split(*ignoreISS, ",") {
 			if s = strings.TrimSpace(s); s != "" {
 				ignoreList = append(ignoreList, s)
 			}
 		}
-		stopSpinner = spinner("Loading... Classic!")
 	}
+
+	stopSpinner := spinner("Loading... Classic!")
 
 	var all []Trajectory
 	var tfiles []traceFile
@@ -801,6 +801,8 @@ func main() {
 		printScanReport(hits, tfiles)
 		return
 	}
+
+	stopSpinner()
 
 	if *asJSON {
 		out := make([]totals, 0, len(all))
