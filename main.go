@@ -792,7 +792,7 @@ func main() {
 		if len(trajs) > 0 && len(trajs[0].Calls) > 0 {
 			start = trajs[0].Start
 		}
-		tfiles = append(tfiles, traceFile{Project: proj, Session: id, Start: start, Data: data})
+		tfiles = append(tfiles, traceFile{Project: proj, Session: id, Start: start, Path: f, Data: data})
 	}
 
 	if *scanFlag {
