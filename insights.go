@@ -197,8 +197,13 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 	if subs > 0 {
 		runs = fmt.Sprintf(" · %s subagent run%s", comma(subs), plural(subs))
 	}
-	fmt.Printf("\n%s\n  YOUR CLAUDE CODE SPEND\n  %s\n  %s sessions%s · %s model calls · %s\n%s\n",
-		rule, label, comma(sessions), runs, comma(calls), money(grand), rule)
+	fmt.Printf("\n%s\n  YOUR CLAUDE CODE SPEND\n  %s\n  %s sessions%s · %s model calls · %s\n",
+		rule, label, comma(sessions), runs, comma(calls), money(grand))
+	if ledger, gap := ledgerGap(inWindow(all, since)); gap >= 0.01*ledger && gap > 0 {
+		fmt.Printf("  + %s (%.0f%%) more in Claude Code's own ledger: calls no transcript records\n",
+			money(gap), 100*gap/ledger)
+	}
+	fmt.Println(rule)
 
 	if len(unpriced) > 0 {
 		n, names := 0, []string{}
@@ -232,6 +237,25 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 
 	fmt.Printf("\n  Cost is split by replay: size × how many calls carried it, against\n")
 	fmt.Printf("  the real bill. Names and counts only — no conversation content.\n")
+}
+
+// ledgerGap compares Claude Code's own cost ledger with the transcripts, over
+// the sessions that have one. The ledger includes the session's subagent runs;
+// what it adds beyond them is background calls no transcript records.
+func ledgerGap(all []Trajectory) (ledger, gap float64) {
+	seen := map[string]bool{}
+	for _, t := range all {
+		if t.Ledger > 0 {
+			seen[t.ID] = true
+			ledger += t.Ledger
+		}
+	}
+	for _, t := range all {
+		if seen[t.ID] || seen[t.Parent] {
+			gap -= sum(t).CostUSD
+		}
+	}
+	return ledger, ledger + gap
 }
 
 // ---------- what to change ----------

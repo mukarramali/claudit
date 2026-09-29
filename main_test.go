@@ -214,3 +214,19 @@ func TestIdleMCP(t *testing.T) {
 		t.Errorf("idle cost = %v, want 2.5", total)
 	}
 }
+
+func TestLedger(t *testing.T) {
+	const tr = `
+{"type":"cost-state","totalCostUSD":1.0,"modelUsage":{"claude-sonnet-5":{"costUSD":1.0}}}
+{"type":"assistant","message":{"id":"a","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1000000,"output_tokens":0}}}
+{"type":"cost-state","totalCostUSD":2.5,"modelUsage":{"claude-sonnet-5":{"costUSD":2.5}}}
+`
+	tr0 := parseClaude([]byte(tr), "s")[0]
+	if o := sum(tr0); o.HarnessCostUSD != 2.5 || o.HarnessModels["claude-sonnet-5"] != 2.5 {
+		t.Fatalf("ledger = %v %v, want the later total 2.5", o.HarnessCostUSD, o.HarnessModels)
+	}
+	child := Trajectory{ID: "s · Explore", Parent: "s", Calls: []Call{{Model: "claude-sonnet-5", Provider: Usage{Input: 250000}}}}
+	if l, gap := ledgerGap([]Trajectory{tr0, child}); l != 2.5 || gap != 0 { // 2.5 - (2 + 0.5)
+		t.Errorf("ledgerGap = %v, %v; want 2.5, 0 (subagent counted against its parent's ledger)", l, gap)
+	}
+}

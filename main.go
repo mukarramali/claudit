@@ -86,6 +86,8 @@ type Trajectory struct {
 	Scaffold       *scaffold
 	Listed         map[string]*listing // MCP server -> what it adds to the tool listing
 	UsedMCP        map[string]bool     // MCP server -> actually called at least once
+	Ledger         float64             // Claude Code's own running cost for the session
+	LedgerModels   map[string]float64  // model -> its cost in that ledger
 }
 
 // scaffold is the system prompt and tool schemas prepended to every call. The
@@ -283,7 +285,11 @@ type record struct {
 	Effort           string          `json:"effort"`
 	Attachment       json.RawMessage `json:"attachment"`
 	HookContext      json.RawMessage `json:"hookAdditionalContext"`
-	Message          struct {
+	TotalCostUSD     float64         `json:"totalCostUSD"` // cost-state
+	ModelUsage       map[string]struct {
+		CostUSD float64 `json:"costUSD"`
+	} `json:"modelUsage"`
+	Message struct {
 		ID      string          `json:"id"`
 		Role    string          `json:"role"`
 		Model   string          `json:"model"`
@@ -473,6 +479,12 @@ func (t *Trajectory) apply(s *state, r record) {
 		t.Start, _ = time.Parse(time.RFC3339, r.Timestamp)
 	}
 	switch r.Type {
+	case "cost-state":
+		// The ledger total only grows within a session, so the last one wins.
+		t.Ledger, t.LedgerModels = r.TotalCostUSD, map[string]float64{}
+		for m, u := range r.ModelUsage {
+			t.LedgerModels[m] = u.CostUSD
+		}
 	case "attachment":
 		// Handle instructions attachments specially: count each file separately.
 		var a struct {
@@ -743,11 +755,13 @@ type totals struct {
 	CostUSD            float64            `json:"cost_usd"`
 	Models             map[string]float64 `json:"models"`             // model -> cost
 	Unpriced           map[string]int     `json:"unpriced,omitempty"` // model -> calls not in cost_usd
+	HarnessCostUSD     float64            `json:"harness_cost_usd,omitempty"`
+	HarnessModels      map[string]float64 `json:"harness_models,omitempty"`
 }
 
 func sum(t Trajectory) totals {
 	o := totals{Session: t.ID, ParentSession: t.Parent, AgentType: t.Agent, Model: t.Model, Calls: len(t.Calls),
-		Models: map[string]float64{}, Unpriced: map[string]int{}}
+		Models: map[string]float64{}, Unpriced: map[string]int{}, HarnessCostUSD: t.Ledger, HarnessModels: t.LedgerModels}
 	for _, c := range t.Calls {
 		o.P += c.P
 		o.T += c.T
