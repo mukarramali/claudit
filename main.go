@@ -1040,16 +1040,43 @@ func sessionFiles(fsys fs.FS) ([]string, error) {
 	return append(top, sub...), err
 }
 
-// sessionOf names the session and project a transcript belongs to. A subagent
-// run lives at <project>/<session>/subagents/agent-<id>.jsonl, so both sit one
-// level further up.
+// sessionOf names the session and project a file belongs to. A subagent run
+// lives at <project>/<session>/subagents/agent-<id>.jsonl and large tool
+// output at <project>/<session>/tool-results/, so both sit one level further
+// up. Edit backups under file-history/<session>/ name their session only; the
+// scanner finds its project from the transcripts.
 func sessionOf(path string) (session, project string, sub bool) {
 	dir := filepath.Dir(path)
-	if filepath.Base(dir) == "subagents" {
+	switch base := filepath.Base(dir); {
+	case base == "subagents" || base == "tool-results":
 		sess := filepath.Dir(dir)
-		return filepath.Base(sess), filepath.Base(filepath.Dir(sess)), true
+		return filepath.Base(sess), filepath.Base(filepath.Dir(sess)), base == "subagents"
+	case base == "paste-cache":
+		return "paste-cache", "~/.claude", false
+	case filepath.Base(filepath.Dir(dir)) == "file-history":
+		return base, "", false
+	case filepath.Base(path) == "history.jsonl":
+		return "prompt history", "~/.claude", false
 	}
 	return strings.TrimSuffix(filepath.Base(path), ".jsonl"), filepath.Base(dir), false
+}
+
+// scanExtras lists what else under ~/.claude can hold a pasted or read
+// secret: large tool output next to each session, and, when scanning every
+// project, edit backups, typed-prompt history and the paste cache.
+func scanExtras(claude fs.FS, projects []string, everything bool) []string {
+	var out []string
+	for _, p := range projects {
+		m, _ := fs.Glob(claude, p+"/*/tool-results/*")
+		out = append(out, m...)
+	}
+	if everything {
+		for _, g := range []string{"file-history/*/*", "history.jsonl", "paste-cache/*"} {
+			m, _ := fs.Glob(claude, g)
+			out = append(out, m...)
+		}
+	}
+	return out
 }
 
 // agentType reads the agentType from the .meta.json next to a subagent run.
@@ -1136,6 +1163,18 @@ func main() {
 	}
 
 	var ignoreList []string
+	if home, err := os.UserHomeDir(); err == nil && *scanFlag {
+		claude := filepath.Join(home, ".claude")
+		var rel []string
+		for _, a := range args {
+			if r, err := filepath.Rel(claude, a); err == nil && !strings.HasPrefix(r, "..") {
+				rel = append(rel, r)
+			}
+		}
+		for _, f := range scanExtras(os.DirFS(claude), rel, !*hereFlag && len(flag.Args()) == 0) {
+			paths = append(paths, filepath.Join(claude, f))
+		}
+	}
 	if *scanFlag {
 		for _, s := range strings.Split(*ignoreISS, ",") {
 			if s = strings.TrimSpace(s); s != "" {
@@ -1180,6 +1219,11 @@ func main() {
 		id, proj, sub := sessionOf(f)
 		if *scanFlag {
 			ts, cwd := firstMeta(data)
+			if id == "prompt history" { // spans all time; its first line would date it June
+				if fi, err := os.Stat(f); err == nil {
+					ts = fi.ModTime()
+				}
+			}
 			tfiles = append(tfiles, traceFile{Project: proj, Session: id, Start: ts, CWD: cwd, Path: f, Data: data})
 			continue
 		}
@@ -1196,6 +1240,18 @@ func main() {
 	}
 
 	if *scanFlag {
+		// Edit backups name only their session; take the project from its transcript.
+		projOf := map[string]traceFile{}
+		for _, tf := range tfiles {
+			if tf.Project != "" && tf.CWD != "" {
+				projOf[tf.Session] = tf
+			}
+		}
+		for i, tf := range tfiles {
+			if tf.Project == "" {
+				tfiles[i].Project, tfiles[i].CWD = cmp.Or(projOf[tf.Session].Project, "~/.claude"), projOf[tf.Session].CWD
+			}
+		}
 		hits := scanTraces(tfiles, ignoreList)
 		stopSpinner()
 		printScanReport(hits, tfiles)

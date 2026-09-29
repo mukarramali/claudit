@@ -15,7 +15,10 @@ from `~/.claude/projects/**/*.jsonl` rather than taken on trust.
 including subagent runs under `<session>/subagents/` and the agent type from their
 `.meta.json`. It makes no network requests of any kind, sends nothing anywhere, and
 writes nothing to disk. It needs no API key or login. CLAUDE.md is not read from
-disk: each transcript records the memory files that session actually loaded. The
+disk: each transcript records the memory files that session actually loaded.
+`-scanner` also reads each session's `tool-results/`, and when scanning every
+project `~/.claude/file-history/`, `history.jsonl` and `paste-cache/`: the places
+a pasted or read secret lands besides the transcript. The
 provider usage figures come directly from the transcript JSON that Claude Code
 writes locally — nothing is fetched from an API.
 

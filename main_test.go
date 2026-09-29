@@ -540,3 +540,28 @@ func TestWorkDriven(t *testing.T) {
 		t.Errorf("workDriven included unattributed call, want to skip it")
 	}
 }
+
+func TestScanExtras(t *testing.T) {
+	fsys := fstest.MapFS{
+		"projects/p/s1.jsonl":                {},
+		"projects/p/s1/tool-results/big.txt": {},
+		"file-history/s1/abc@v1":             {},
+		"history.jsonl":                      {},
+		"paste-cache/x.txt":                  {},
+	}
+	if got := scanExtras(fsys, []string{"projects/p"}, false); !slices.Equal(got, []string{"projects/p/s1/tool-results/big.txt"}) {
+		t.Errorf("one project: %v, want its tool-results only", got)
+	}
+	if got := scanExtras(fsys, []string{"projects/p"}, true); len(got) != 4 {
+		t.Errorf("everything: %v, want tool-results, file-history, history, paste-cache", got)
+	}
+	for path, want := range map[string]string{
+		"/h/.claude/projects/p/s1/tool-results/big.txt": "s1 p",
+		"/h/.claude/file-history/s1/abc@v1":             "s1 ",
+		"/h/.claude/paste-cache/x.txt":                  "paste-cache ~/.claude",
+	} {
+		if s, p, _ := sessionOf(path); s+" "+p != want {
+			t.Errorf("sessionOf(%s) = %q %q, want %q", path, s, p, want)
+		}
+	}
+}

@@ -678,8 +678,12 @@ func idleRebuilds(all []Trajectory) (finding, bool) {
 		return finding{}, false
 	}
 
-	detail := []string{
-		fmt.Sprintf("%d after 5-60 min idle, %d after over an hour", short, long),
+	detail := []string{fmt.Sprintf("%d after 5-60 min idle, %d after over an hour", short, long)}
+	switch {
+	case short == 0:
+		detail[0] = "All after over an hour idle, past any cache TTL."
+	case long == 0:
+		detail[0] = "All after 5-60 min idle."
 	}
 	if shortPrem > longPrem {
 		detail = append(detail, "CLAUDE_CODE_PROMPT_CACHE_TTL=1h keeps the cache warm for an hour.")
