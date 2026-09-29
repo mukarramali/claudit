@@ -1179,6 +1179,10 @@ func main() {
 		hits := scanTraces(tfiles, ignoreList)
 		stopSpinner()
 		printScanReport(hits, tfiles)
+		if lines := personalLines(scanPersonal(tfiles)); len(lines) > 0 {
+			fmt.Printf("  PERSONAL DATA — checksum-valid numbers, counts only\n%s\n", strings.Join(lines, "\n"))
+			fmt.Printf("\n  Fixtures count too. Where these are real, delete the matched\n  transcripts: Claude Code keeps them for cleanupPeriodDays.\n\n")
+		}
 		if skipped > 0 {
 			fmt.Printf("(%d older file%s skipped; -days 0 to scan everything)\n", skipped, plural(skipped))
 		}

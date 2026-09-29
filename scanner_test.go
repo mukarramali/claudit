@@ -367,3 +367,36 @@ func TestProjectDisplayName(t *testing.T) {
 		})
 	}
 }
+
+// Numbers are assembled from parts, for the reason TestScanTraces gives.
+func TestPersonalValidators(t *testing.T) {
+	for _, c := range []struct {
+		valid func(string) bool
+		good  string
+		bad   string
+	}{
+		{validIBAN, "GB82 WEST " + "1234 5698 7654 32", "GB82 WEST " + "1234 5698 7654 33"},
+		{validSteuerID, "6517" + "8943266", "6517" + "8943265"},
+		{validCard, "5555 5555 " + "5555 4444", "5555 5555 " + "5555 4445"},
+		{validCard, "4000 0000 " + "0000 0002", "1790" + "674042119"}, // an epoch-ms timestamp is no card
+	} {
+		if !c.valid(c.good) || c.valid(c.bad) {
+			t.Errorf("valid(%q)=%v valid(%q)=%v, want true false", c.good, c.valid(c.good), c.bad, c.valid(c.bad))
+		}
+	}
+	if validSteuerID("1123" + "4567891") { // two digits repeat
+		t.Error("tax id with two repeated digits accepted")
+	}
+}
+
+func TestPersonalCountsOnly(t *testing.T) {
+	iban := "GB82WEST" + "12345698765432"
+	blob := `{"content":"pay ` + iban + ` or ` + iban + ` and 4111` + `111111111111"}`
+	lines := personalLines(scanPersonal([]traceFile{{Session: "sess1234abcd", Data: []byte(blob)}}))
+	if len(lines) != 1 || !strings.Contains(lines[0], "IBAN 1") || strings.Contains(lines[0], "card") {
+		t.Fatalf("lines = %q, want one distinct IBAN and the public test card skipped", lines)
+	}
+	if strings.ContainsAny(strings.TrimPrefix(lines[0], "  session  sess1234"), "23456789") {
+		t.Errorf("digits reached the output: %q", lines[0])
+	}
+}

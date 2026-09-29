@@ -4,10 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -509,4 +511,133 @@ func projectDisplayName(slug, cwd string) string {
 		return "~" + strings.TrimPrefix(cwd, home)
 	}
 	return cwd
+}
+
+// ---------- personal data ----------
+//
+// Counts only. Nothing from a match — not a digit, not a redacted preview —
+// reaches the output.
+
+// validIBAN checks ISO 13616: country letters, then mod 97 == 1 over the
+// rearranged string with letters as 10..35.
+func validIBAN(s string) bool {
+	s = strings.ToUpper(strings.ReplaceAll(s, " ", ""))
+	if len(s) < 15 || len(s) > 34 || s[0] < 'A' || s[0] > 'Z' || s[1] < 'A' || s[1] > 'Z' {
+		return false
+	}
+	mod := 0
+	for _, c := range s[4:] + s[:4] {
+		switch {
+		case c >= '0' && c <= '9':
+			mod = (mod*10 + int(c-'0')) % 97
+		case c >= 'A' && c <= 'Z':
+			mod = (mod*100 + int(c-'A') + 10) % 97
+		default:
+			return false
+		}
+	}
+	return mod == 1
+}
+
+// validSteuerID checks a German tax id: 11 digits, no leading 0, in the first
+// ten exactly one digit repeats (2 or 3 times), and an ISO 7064 MOD 11,10
+// check digit.
+func validSteuerID(s string) bool {
+	if len(s) != 11 || s[0] == '0' || strings.Trim(s, "0123456789") != "" {
+		return false
+	}
+	var count [10]int
+	repeats := 0
+	for _, c := range s[:10] {
+		if count[c-'0']++; count[c-'0'] == 2 {
+			repeats++
+		} else if count[c-'0'] > 3 {
+			return false
+		}
+	}
+	product := 10
+	for _, c := range s[:10] {
+		sum := (int(c-'0') + product) % 10
+		if sum == 0 {
+			sum = 10
+		}
+		product = sum * 2 % 11
+	}
+	return repeats == 1 && (11-product)%10 == int(s[10]-'0')
+}
+
+// cardIIN is the issuer prefix of the card networks. Random digit runs pass
+// Luhn one time in ten — epoch-millisecond timestamps are 13 digits — so a
+// number must also start like a real card.
+var cardIIN = regexp.MustCompile(`^(?:4|5[1-5]|2[2-7]|3[47]|6(?:011|5))`)
+
+// validCard checks a 13-19 digit number against an issuer prefix and Luhn.
+func validCard(s string) bool {
+	s = strings.NewReplacer(" ", "", "-", "").Replace(s)
+	if len(s) < 13 || len(s) > 19 || strings.Trim(s, "0123456789") != "" || !cardIIN.MatchString(s) {
+		return false
+	}
+	sum := 0
+	for i := range len(s) {
+		d := int(s[len(s)-1-i] - '0')
+		if i%2 == 1 {
+			if d *= 2; d > 9 {
+				d -= 9
+			}
+		}
+		sum += d
+	}
+	return sum%10 == 0
+}
+
+// publicExamples are the documented sample numbers every test suite uses.
+var publicExamples = map[string]bool{"DE89370400440532013000": true, "4111111111111111": true, "86095742719": true}
+
+var personalPatterns = []struct {
+	kind  string
+	re    *regexp.Regexp
+	valid func(string) bool
+}{
+	{"IBAN", regexp.MustCompile(`\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?\b`), validIBAN},
+	{"tax id", regexp.MustCompile(`\b[1-9]\d{10}\b`), validSteuerID},
+	{"card", regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`), validCard},
+}
+
+// scanPersonal counts distinct checksum-valid personal numbers per session.
+// ponytail: counts by kind only; by source (local tool vs MCP server) needs the
+// per-record scan in docs/plan-next.md 3.4.
+func scanPersonal(files []traceFile) map[string]map[string]int {
+	out := map[string]map[string]int{}
+	seen := map[string]bool{}
+	for _, tf := range files {
+		text := string(tf.Data)
+		for _, p := range personalPatterns {
+			for _, m := range p.re.FindAllString(text, -1) {
+				norm := strings.NewReplacer(" ", "", "-", "").Replace(m)
+				key := tf.Session + "\x00" + norm
+				if seen[key] || publicExamples[norm] || !p.valid(m) {
+					continue
+				}
+				seen[key] = true
+				if out[tf.Session] == nil {
+					out[tf.Session] = map[string]int{}
+				}
+				out[tf.Session][p.kind]++
+			}
+		}
+	}
+	return out
+}
+
+// personalLines renders the counts, one line per session.
+func personalLines(counts map[string]map[string]int) []string {
+	var out []string
+	for _, sess := range slices.Sorted(maps.Keys(counts)) {
+		var parts []string
+		for _, kind := range slices.Sorted(maps.Keys(counts[sess])) {
+			parts = append(parts, fmt.Sprintf("%s %d", kind, counts[sess][kind]))
+		}
+		out = append(out, fmt.Sprintf("  session  %s  %s", sess[:min(len(sess), 8)], strings.Join(parts, " · ")))
+	}
+	return out
 }
