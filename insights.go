@@ -233,6 +233,8 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 			money(yours), money(grand), 100*yours/grand)
 	}
 
+	concentration(inWindow(all, since), since)
+
 	whatToChange(all, since, into)
 
 	fmt.Printf("\n  Cost is split by replay: size × how many calls carried it, against\n")
@@ -458,16 +460,6 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 			"Idle: " + strings.Join(names, ", ")}})
 	}
 
-	if rows, mult := depthCurve(all, since); len(rows) > 1 {
-		head := "Later calls in a session cost more than early ones"
-		if mult > 1.5 {
-			head = fmt.Sprintf("A call late in a session costs %.1fx an early one", mult)
-		}
-		fs = append(fs, finding{head, 0, "", []string{
-			"per call:  " + strings.Join(rows, "   "),
-			"Every turn resends the ones before it. /clear between tasks."}})
-	}
-
 	writes, reads := 0, 0
 	for _, t := range all {
 		o := sum(t)
@@ -490,6 +482,7 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 		}
 	}
 
+	good = append(good, habits(all)...)
 	fs = append(fs, newerModels(all)...)
 	if f, ok, g := inheritedSubagents(all); ok {
 		fs = append(fs, f)
@@ -750,4 +743,102 @@ func failedTools(all []Trajectory) (finding, bool) {
 		Save:     total,
 		Detail:   []string{strings.Join(parts, " · "), "Each failure costs a full call to read the error and retry."},
 	}, true
+}
+
+// concentration says where the money is: how much the priciest tenth of
+// sessions cost and what they look like, so nobody optimises quick questions
+// when the long sessions are the bill. A session includes its subagent runs.
+func concentration(all []Trajectory, since time.Time) {
+	type sess struct {
+		calls int
+		cost  float64
+		model string
+	}
+	by := map[string]*sess{}
+	grand := 0.0
+	for _, t := range all {
+		id := cmp.Or(t.Parent, t.ID)
+		if by[id] == nil {
+			by[id] = &sess{}
+		}
+		o := sum(t)
+		by[id].cost += o.CostUSD
+		grand += o.CostUSD
+		if t.Parent == "" {
+			by[id].calls, by[id].model = len(t.Calls), modelKey(o.Model)
+		}
+	}
+	ss := slices.SortedFunc(maps.Values(by), func(a, b *sess) int { return cmp.Compare(b.cost, a.cost) })
+	if len(ss) < 10 || grand <= 0 {
+		return
+	}
+	bucket := func(n int) string {
+		switch {
+		case n <= 10:
+			return "1-10"
+		case n <= 50:
+			return "11-50"
+		case n <= 200:
+			return "51-200"
+		}
+		return "200+"
+	}
+	top := ss[:len(ss)/10]
+	topCost, shape := 0.0, map[string]float64{}
+	for _, s := range top {
+		topCost += s.cost
+		shape[bucket(s.calls)+" calls on "+pretty(s.model)] += s.cost
+	}
+	common := slices.SortedFunc(maps.Keys(shape), func(a, b string) int { return cmp.Compare(shape[b], shape[a]) })[0]
+	if len(top) == 1 {
+		fmt.Printf("\n  Your priciest session, %s, cost\n  %s of %s (%.0f%%).", common, money(topCost), money(grand), 100*topCost/grand)
+	} else {
+		fmt.Printf("\n  The priciest %d sessions cost %s of %s (%.0f%%), mostly\n  %s.",
+			len(top), money(topCost), money(grand), 100*topCost/grand, common)
+	}
+	// The top-tier model is whatever the priciest session ran on; quick
+	// sessions on it are what people cut first.
+	quick := 0.0
+	for _, s := range ss {
+		if s.calls <= 10 && s.model == ss[0].model {
+			quick += s.cost
+		}
+	}
+	if quick > 0 && quick < 0.02*grand {
+		fmt.Printf(" Quick %s sessions (≤10 calls)\n  cost %s in all — not where the money is.", pretty(ss[0].model), money(quick))
+	}
+	if rows, mult := depthCurve(all, since); len(rows) > 1 && mult > 1.5 {
+		fmt.Printf("\n  A call late in a session costs %.1fx an early one: /clear between tasks.", mult)
+	}
+	fmt.Println()
+}
+
+// habits are the good lines that make the bad ones credible: they print only
+// when their threshold holds.
+func habits(all []Trajectory) []string {
+	var out []string
+	sessions, switched, clears := 0, 0, 0
+	for _, t := range all {
+		if t.Parent != "" {
+			continue
+		}
+		sessions++
+		clears += t.Commands["/clear"]
+		seen := map[string]bool{}
+		for _, c := range t.Calls {
+			if k := modelKey(c.Model); k != "" {
+				seen[k] = true
+			}
+		}
+		if len(seen) > 1 {
+			switched++
+		}
+	}
+	if sessions >= 10 && float64(switched) <= 0.05*float64(sessions) {
+		out = append(out, fmt.Sprintf("Model switches are rare — %d of %d sessions", switched, sessions))
+	}
+	if clears >= 5 {
+		out = append(out, fmt.Sprintf("/clear used %d times — context stays short", clears))
+	}
+	return out
 }

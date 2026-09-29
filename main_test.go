@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -364,5 +365,22 @@ func TestFailedTools(t *testing.T) {
 	_, ok2 := failedTools(trs2)
 	if ok2 {
 		t.Errorf("failedTools on non-error fixture returned ok=true, want false")
+	}
+}
+
+func TestHabits(t *testing.T) {
+	var all []Trajectory
+	for i := range 20 {
+		tr := Trajectory{ID: fmt.Sprint(i), Calls: []Call{{Model: "claude-sonnet-5"}}, Commands: map[string]int{"/clear": 1}}
+		if i == 0 {
+			tr.Calls = append(tr.Calls, Call{Model: "claude-opus-5"})
+		}
+		all = append(all, tr)
+	}
+	if got := habits(all); len(got) != 2 || !strings.Contains(got[0], "1 of 20") || !strings.Contains(got[1], "20 times") {
+		t.Errorf("habits = %q, want rare switches (1 of 20) and /clear 20 times", got)
+	}
+	if got := habits(all[:3]); len(got) != 0 {
+		t.Errorf("habits on 3 sessions = %q, want none (below thresholds)", got)
 	}
 }

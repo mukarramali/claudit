@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -86,6 +87,7 @@ type Trajectory struct {
 	Scaffold       *scaffold
 	Listed         map[string]*listing // MCP server -> what it adds to the tool listing
 	UsedMCP        map[string]bool     // MCP server -> actually called at least once
+	Commands       map[string]int      // slash command name -> times run
 	Ledger         float64             // Claude Code's own running cost for the session
 	LedgerModels   map[string]float64  // model -> its cost in that ledger
 }
@@ -456,6 +458,23 @@ type state struct {
 	tools     map[string]string // tool_use id -> label, to name tool results
 }
 
+var commandRe = regexp.MustCompile(`<command-name>(/[^<\s]+)</command-name>`)
+
+// noteCommand counts a slash command by name. The rest of the record is
+// what was typed, and is not kept.
+func (t *Trajectory) noteCommand(raw json.RawMessage) {
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return
+	}
+	if m := commandRe.FindStringSubmatch(s); m != nil {
+		if t.Commands == nil {
+			t.Commands = map[string]int{}
+		}
+		t.Commands[m[1]]++
+	}
+}
+
 // add records a named contribution as well as its bucket total.
 func (t *Trajectory) add(kind, name string, n int, out bool) {
 	if n == 0 {
@@ -554,6 +573,7 @@ func (t *Trajectory) apply(s *state, r record) {
 			}
 			return
 		}
+		t.noteCommand(r.Message.Content)
 		n := tokensIn(r.Message.Content)
 		if r.IsMeta || r.IsCompactSummary {
 			s.A += n
