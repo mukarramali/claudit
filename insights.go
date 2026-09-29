@@ -2,8 +2,11 @@ package main
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -238,6 +241,11 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 	concentration(inWindow(all, since), since)
 	if line := prCosts(inWindow(all, since)); line != "" {
 		fmt.Printf("\n  Per PR: %s\n", line)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if line := facetLine(inWindow(all, since), filepath.Join(home, ".claude", "usage-data", "facets")); line != "" {
+			fmt.Printf("  %s\n", line)
+		}
 	}
 
 	whatToChange(all, since, into)
@@ -1121,4 +1129,74 @@ func workDriven(all []Trajectory) []*group {
 		}
 	}
 	return slices.Collect(maps.Values(by))
+}
+
+// facet is the part of an /insights facet file claudit reads: enum fields
+// only. Summaries, goals and friction details are prose and never decoded.
+type facet struct {
+	SessionType string         `json:"session_type"`
+	Friction    map[string]int `json:"friction_counts"`
+}
+
+// facetLine joins cost to the sessions /insights has classified: $/session by
+// session type, and what friction adds. Silent without facets.
+func facetLine(all []Trajectory, dir string) string {
+	cost, sessions := map[string]float64{}, 0
+	for _, t := range all {
+		cost[cmp.Or(t.Parent, t.ID)] += sum(t).CostUSD
+		if t.Parent == "" {
+			sessions++
+		}
+	}
+	byType, nType := map[string]float64{}, map[string]int{}
+	var with, without [2]float64 // cost, count
+	for id, c := range cost {
+		b, err := os.ReadFile(filepath.Join(dir, id+".json"))
+		var f facet
+		if err != nil || json.Unmarshal(b, &f) != nil || f.SessionType == "" {
+			continue
+		}
+		byType[f.SessionType] += c
+		nType[f.SessionType]++
+		side := &without
+		for _, n := range f.Friction {
+			if n > 0 {
+				side = &with
+			}
+		}
+		side[0] += c
+		side[1]++
+	}
+	joined := int(with[1] + without[1])
+	if joined < 3 {
+		return ""
+	}
+	per := func(k string) float64 { return byType[k] / float64(nType[k]) }
+	var parts []string
+	for _, k := range slices.SortedFunc(maps.Keys(byType), func(a, b string) int { return cmp.Compare(per(a), per(b)) }) {
+		parts = append(parts, fmt.Sprintf("%s %s", strings.ReplaceAll(k, "_", " "), money(per(k))))
+	}
+	line := fmt.Sprintf("Per session, by /insights type (%d of %d sessions):", joined, sessions)
+	row := ""
+	for i, p := range parts {
+		if i > 0 && len(row)+len(p) > 62 {
+			line, row = line+"\n  "+row, ""
+		}
+		if row != "" {
+			row += " · "
+		}
+		row += p
+	}
+	line += "\n  " + row
+	// ponytail: under ten sessions a side the friction gap flips sign with the window.
+	if with[1] >= 10 && without[1] >= 10 {
+		if d := 100 * (with[0]/with[1]/(without[0]/without[1]) - 1); d >= 10 || d <= -10 {
+			more := "more"
+			if d < 0 {
+				d, more = -d, "less"
+			}
+			line += fmt.Sprintf("\n  Sessions with friction cost %.0f%% %s.", d, more)
+		}
+	}
+	return line
 }

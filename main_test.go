@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -563,5 +565,145 @@ func TestScanExtras(t *testing.T) {
 		if s, p, _ := sessionOf(path); s+" "+p != want {
 			t.Errorf("sessionOf(%s) = %q %q, want %q", path, s, p, want)
 		}
+	}
+}
+
+func TestFacetLine(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build test trajectories with known costs. Each Call with Sonnet-5 pricing.
+	// Sonnet-5: $2/MTok in, $10/MTok out. 100k tokens = $0.0002
+	trajs := []Trajectory{
+		{
+			ID:     "sess1",
+			Parent: "",
+			Start:  time.Now(),
+			Calls: []Call{
+				{
+					P: 0, T: 0, A: 0, X: 0,
+					MText: 0, MTool: 0, R: 0,
+					Provider: Usage{Input: 100_000, Output: 0},
+					Model:    "claude-sonnet-5",
+				},
+			},
+		},
+		{
+			ID:     "sess2",
+			Parent: "",
+			Start:  time.Now(),
+			Calls: []Call{
+				{
+					P: 0, T: 0, A: 0, X: 0,
+					MText: 0, MTool: 0, R: 0,
+					Provider: Usage{Input: 200_000, Output: 0},
+					Model:    "claude-sonnet-5",
+				},
+			},
+		},
+		{
+			ID:     "sub1",
+			Parent: "sess2", // subagent of sess2
+			Start:  time.Now(),
+			Calls: []Call{
+				{
+					P: 0, T: 0, A: 0, X: 0,
+					MText: 0, MTool: 0, R: 0,
+					Provider: Usage{Input: 100_000, Output: 0},
+					Model:    "claude-sonnet-5",
+				},
+			},
+		},
+		{
+			ID:     "sess3",
+			Parent: "",
+			Start:  time.Now(),
+			Calls: []Call{
+				{
+					P: 0, T: 0, A: 0, X: 0,
+					MText: 0, MTool: 0, R: 0,
+					Provider: Usage{Input: 400_000, Output: 0},
+					Model:    "claude-sonnet-5",
+				},
+			},
+		},
+	}
+
+	// Write facet files for sess1, sess2, and sess3 (need 3+ for non-empty result)
+	// sess1: quick_question, no friction
+	facet1 := `{
+"session_type": "quick question",
+"outcome": "completed",
+"friction_counts": {},
+"brief_summary": "should be ignored"
+}`
+	if err := os.WriteFile(filepath.Join(dir, "sess1.json"), []byte(facet1), 0644); err != nil {
+		t.Fatalf("write sess1.json: %v", err)
+	}
+
+	// sess2: single_task, no friction
+	facet2 := `{
+"session_type": "single_task",
+"outcome": "completed",
+"friction_counts": {}
+}`
+	if err := os.WriteFile(filepath.Join(dir, "sess2.json"), []byte(facet2), 0644); err != nil {
+		t.Fatalf("write sess2.json: %v", err)
+	}
+
+	// sess3: multi_task, with friction
+	facet3 := `{
+"session_type": "multi_task",
+"outcome": "completed",
+"friction_counts": {"hook_timeout": 2},
+"underlying_goal": "ignored text field"
+}`
+	if err := os.WriteFile(filepath.Join(dir, "sess3.json"), []byte(facet3), 0644); err != nil {
+		t.Fatalf("write sess3.json: %v", err)
+	}
+
+	// Test with valid directory
+	line := facetLine(trajs, dir)
+	if line == "" {
+		t.Fatal("facetLine returned empty, want non-empty (3 sessions with facets)")
+	}
+
+	// Verify output format and content
+	if !strings.Contains(line, "by /insights type") {
+		t.Errorf("line missing 'by /insights type': %s", line)
+	}
+	if !strings.Contains(line, "quick question") {
+		t.Errorf("line missing quick_question: %s", line)
+	}
+	if !strings.Contains(line, "single task $0.60") {
+		t.Errorf("line missing single_task: %s", line)
+	}
+	if !strings.Contains(line, "multi task $0.80") {
+		t.Errorf("line missing multi_task: %s", line)
+	}
+	if !strings.Contains(line, "3 of 3 sessions") {
+		t.Errorf("line should show 3 of 3 sessions: %s", line)
+	}
+
+	// Test with missing directory
+	line = facetLine(trajs, "/nonexistent/dir")
+	if line != "" {
+		t.Errorf("facetLine with missing dir returned %q, want empty", line)
+	}
+
+	// Test with empty directory (< 3 sessions)
+	emptyDir := t.TempDir()
+	facetEmpty := `{"session_type": "single_task", "outcome": "completed", "friction_counts": {}}`
+	if err := os.WriteFile(filepath.Join(emptyDir, "sess1.json"), []byte(facetEmpty), 0644); err != nil {
+		t.Fatalf("write to emptyDir: %v", err)
+	}
+	line = facetLine(trajs[:1], emptyDir)
+	if line != "" {
+		t.Errorf("facetLine with 1 session returned %q, want empty", line)
+	}
+
+	// Test with empty dir string
+	line = facetLine(trajs, "")
+	if line != "" {
+		t.Errorf("facetLine with empty dir returned %q, want empty", line)
 	}
 }
