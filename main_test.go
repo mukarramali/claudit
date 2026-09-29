@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // One fixture exercising the three things that are easy to get wrong: Claude
@@ -116,5 +117,24 @@ func TestItemLabels(t *testing.T) {
 		if !slices.Contains(got, w) {
 			t.Errorf("no item labelled %q; got %v", w, got)
 		}
+	}
+}
+
+func TestSubagentFiles(t *testing.T) {
+	fsys := fstest.MapFS{
+		"s1.jsonl":                        {},
+		"s1/subagents/agent-a1.jsonl":     {},
+		"s1/subagents/agent-a1.meta.json": {},
+		"s1/tool-results/big.txt":         {},
+	}
+	got, err := sessionFiles(fsys)
+	if err != nil || !slices.Equal(got, []string{"s1.jsonl", "s1/subagents/agent-a1.jsonl"}) {
+		t.Fatalf("sessionFiles = %v, %v", got, err)
+	}
+	if s, p, sub := sessionOf("/x/proj/s1/subagents/agent-a1.jsonl"); s != "s1" || p != "proj" || !sub {
+		t.Errorf("subagent file -> %q %q %v, want s1 proj true", s, p, sub)
+	}
+	if s, p, sub := sessionOf("/x/proj/s1.jsonl"); s != "s1" || p != "proj" || sub {
+		t.Errorf("session file -> %q %q %v, want s1 proj false", s, p, sub)
 	}
 }

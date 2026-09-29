@@ -200,8 +200,6 @@ used and the report says so.
 
 ## Known limits
 
-- Every subagent run in a session is lumped into one "subagents" trajectory;
-  separating concurrent subagents needs `parentUuid` chain-walking.
 - Replay assumes nothing is ever dropped from context between calls. Providers do
   strip stale reasoning, so `replay` runs slightly high on long sessions.
 - Images are sized by Anthropic's `(w×h)/750` estimate from the PNG/JPEG header.

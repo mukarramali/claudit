@@ -180,7 +180,7 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 		since = time.Time{} // -days 0 means everything
 	}
 	into := map[string]*group{}
-	calls, sessions, grand := 0, 0, 0.0
+	calls, sessions, subs, grand := 0, 0, 0, 0.0
 	oldest, newest := time.Time{}, time.Time{}
 	for _, t := range all {
 		if !t.Start.IsZero() && t.Start.Before(since) {
@@ -188,7 +188,11 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 		}
 		attribute(t, into)
 		calls += len(t.Calls)
-		sessions++
+		if t.Parent != "" {
+			subs++
+		} else {
+			sessions++
+		}
 		grand += sum(t).CostUSD
 		if !t.Start.IsZero() {
 			if oldest.IsZero() || t.Start.Before(oldest) {
@@ -199,7 +203,7 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 			}
 		}
 	}
-	if sessions == 0 {
+	if sessions+subs == 0 {
 		fmt.Printf("\n  No sessions in the last %d days.\n\n", days)
 		return
 	}
@@ -222,8 +226,12 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 	if scope != "" {
 		label = period + " · " + scope
 	}
-	fmt.Printf("\n%s\n  YOUR CLAUDE CODE SPEND\n  %s\n  %s sessions · %s model calls · %s\n%s\n",
-		rule, label, comma(sessions), comma(calls), money(grand), rule)
+	runs := ""
+	if subs > 0 {
+		runs = fmt.Sprintf(" · %s subagent run%s", comma(subs), plural(subs))
+	}
+	fmt.Printf("\n%s\n  YOUR CLAUDE CODE SPEND\n  %s\n  %s sessions%s · %s model calls · %s\n%s\n",
+		rule, label, comma(sessions), runs, comma(calls), money(grand), rule)
 
 	section("ALWAYS IN CONTEXT", "  prepended to every single call", by[scaffoldKind], grand)
 	section("YOUR CUSTOMISATIONS", "  hooks, CLAUDE.md, listings, skill bodies", by[setup], grand)

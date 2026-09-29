@@ -18,6 +18,7 @@ import (
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -75,6 +76,7 @@ type item struct {
 // Trajectory is one conversation: a sequence of inference calls.
 type Trajectory struct {
 	ID, Model, CWD string
+	Parent, Agent  string // set on a subagent run: the session that spawned it, and its agentType
 	Start          time.Time
 	Calls          []Call
 	Items          []item
@@ -591,6 +593,8 @@ func priceOf(model string, o totals) bill {
 
 type totals struct {
 	Session            string  `json:"session"`
+	ParentSession      string  `json:"parent_session,omitempty"`
+	AgentType          string  `json:"agent_type,omitempty"`
 	Model              string  `json:"model"`
 	Calls              int     `json:"inference_calls"`
 	Turns              int     `json:"user_turns"`
@@ -620,7 +624,7 @@ type totals struct {
 }
 
 func sum(t Trajectory) totals {
-	o := totals{Session: t.ID, Model: t.Model, Calls: len(t.Calls)}
+	o := totals{Session: t.ID, ParentSession: t.Parent, AgentType: t.Agent, Model: t.Model, Calls: len(t.Calls)}
 	for _, c := range t.Calls {
 		o.P += c.P
 		o.T += c.T
@@ -723,6 +727,43 @@ func allProjects() []string {
 	return dirs
 }
 
+// sessionFiles lists a project directory's transcripts: one per session, plus
+// one per subagent run under <session>/subagents/.
+func sessionFiles(fsys fs.FS) ([]string, error) {
+	top, err := fs.Glob(fsys, "*.jsonl")
+	if err != nil {
+		return nil, err
+	}
+	sub, err := fs.Glob(fsys, "*/subagents/*.jsonl")
+	return append(top, sub...), err
+}
+
+// sessionOf names the session and project a transcript belongs to. A subagent
+// run lives at <project>/<session>/subagents/agent-<id>.jsonl, so both sit one
+// level further up.
+func sessionOf(path string) (session, project string, sub bool) {
+	dir := filepath.Dir(path)
+	if filepath.Base(dir) == "subagents" {
+		sess := filepath.Dir(dir)
+		return filepath.Base(sess), filepath.Base(filepath.Dir(sess)), true
+	}
+	return strings.TrimSuffix(filepath.Base(path), ".jsonl"), filepath.Base(dir), false
+}
+
+// agentType reads the agentType from the .meta.json next to a subagent run.
+// The file also holds the task description, which is prompt text: not read.
+func agentType(path string) string {
+	b, err := os.ReadFile(strings.TrimSuffix(path, ".jsonl") + ".meta.json")
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		AgentType string `json:"agentType"`
+	}
+	json.Unmarshal(b, &m)
+	return m.AgentType
+}
+
 func transcripts(args []string) ([]string, error) {
 	if len(args) == 0 {
 		cwd, err := os.Getwd()
@@ -743,11 +784,13 @@ func transcripts(args []string) ([]string, error) {
 			return nil, err
 		}
 		if fi.IsDir() {
-			m, err := filepath.Glob(filepath.Join(a, "*.jsonl"))
+			m, err := sessionFiles(os.DirFS(a))
 			if err != nil {
 				return nil, err
 			}
-			files = append(files, m...)
+			for _, f := range m {
+				files = append(files, filepath.Join(a, f))
+			}
 			continue
 		}
 		files = append(files, a)
@@ -832,15 +875,22 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			continue
 		}
-		id := strings.TrimSuffix(filepath.Base(f), ".jsonl")
-		proj := filepath.Base(filepath.Dir(f))
+		id, proj, sub := sessionOf(f)
 		if *scanFlag {
 			ts, cwd := firstMeta(data)
 			tfiles = append(tfiles, traceFile{Project: proj, Session: id, Start: ts, CWD: cwd, Path: f, Data: data})
-		} else {
-			trajs := parseClaude(data, id)
-			all = append(all, trajs...)
+			continue
 		}
+		trajs := parseClaude(data, id)
+		if sub {
+			// Every record in a subagent file is a sidechain, so it all parses
+			// into one trajectory; name it after its parent and agent type.
+			agent := cmp.Or(agentType(f), "subagent")
+			for i := range trajs {
+				trajs[i].ID, trajs[i].Parent, trajs[i].Agent = id+" · "+agent, id, agent
+			}
+		}
+		all = append(all, trajs...)
 	}
 
 	if *scanFlag {
