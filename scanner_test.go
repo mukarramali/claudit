@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -270,6 +271,52 @@ func TestScanTraces(t *testing.T) {
 	}
 	if hits[0].Label != "Stripe Key" {
 		t.Errorf("label = %q, want \"Stripe Key\"", hits[0].Label)
+	}
+}
+
+// scanLabels runs the scanner over one blob and returns the labels it reported.
+func scanLabels(data string) []string {
+	var out []string
+	for _, h := range scanTraces([]traceFile{{Project: "p", Session: "sess1234567890abcdef", Data: []byte(data)}}, nil) {
+		out = append(out, h.Label)
+	}
+	return out
+}
+
+// Every value is assembled from parts, for the reason TestScanTraces gives.
+func TestNewPatterns(t *testing.T) {
+	r := "Q7vK2mX9pL4nR8tB3wZ6yC1dF5gH0jS" // random-looking, no placeholder words
+	for label, v := range map[string]string{
+		"AWS access key":      "AK" + "IA" + "Q7VK2MX9PL4NR8TB",
+		"OpenAI project key":  "sk-" + "proj-" + r + r[:10],
+		"GitHub fine-grained": "github_" + "pat_" + r + r,
+		"Slack token":         "xo" + "xb-" + r[:12],
+		"Google API key":      "AI" + "za" + r + "Abcd",
+		"GitLab PAT":          "gl" + "pat-" + r[:20],
+		"npm token":           "npm" + "_" + r + "Abcde",
+		"Atlassian API token": "ATA" + "TT" + r + r,
+		"env-style secret":    "DB_" + "PASSWORD=" + r,
+		"Private Key":         `{"k":"-----BEGIN ` + "PRIVATE KEY-----" + `\n` + r + `\n` + r + `\n-----END PRIVATE KEY-----"}`,
+	} {
+		if got := scanLabels(v); !slices.Contains(got, label) {
+			t.Errorf("%s: not found, got %v", label, got)
+		}
+	}
+	if got := scanLabels("sk-" + "proj-" + r + r[:10]); slices.Contains(got, "OpenAI Key") {
+		t.Errorf("sk-proj key double-reported as OpenAI Key: %v", got)
+	}
+}
+
+func TestEnvStyleRejectsNonSecrets(t *testing.T) {
+	for _, v := range []string{
+		"API_" + "KEY=your_api_key_here_1234567", // placeholder
+		"TOK" + "EN=aaaaaaaaaaaaaaaaaaaaaaaa1",   // low entropy
+		"API_" + "KEY=12345678901234567890",      // no letters
+		"SEC" + "RET=Xk9ExampleQ7vK2mX9pL4nR8",   // placeholder word inside
+	} {
+		if got := scanLabels(v); slices.Contains(got, "env-style secret") {
+			t.Errorf("%q reported as env-style secret", v)
+		}
 	}
 }
 

@@ -94,7 +94,15 @@ type credPattern struct {
 }
 
 var credPatterns = []credPattern{
-	{"Private Key", regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----\n[A-Za-z0-9+/=\n]{40,}-----END`)},
+	{"Private Key", regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----(?:\\n|\n)(?:[A-Za-z0-9+/=]|\\n|\n){40,}-----END`)},
+	{"AWS access key", regexp.MustCompile(`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`)},
+	{"OpenAI project key", regexp.MustCompile(`sk-proj-[A-Za-z0-9_-]{40,}`)},
+	{"GitHub fine-grained", regexp.MustCompile(`github_pat_[A-Za-z0-9_]{60,}`)},
+	{"Slack token", regexp.MustCompile(`xox[abposr]-[A-Za-z0-9-]{10,}`)},
+	{"Google API key", regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
+	{"GitLab PAT", regexp.MustCompile(`glpat-[A-Za-z0-9_-]{20,}`)},
+	{"npm token", regexp.MustCompile(`\bnpm_[A-Za-z0-9]{36}\b`)},
+	{"Atlassian API token", regexp.MustCompile(`ATATT[A-Za-z0-9_=-]{50,}`)},
 	{"GitHub Token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`)},
 	{"Anthropic Key", regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{40,}`)},
 	{"OpenAI Key", regexp.MustCompile(`sk-[A-Za-z0-9]{48,}`)},
@@ -193,6 +201,28 @@ func scanEntropy(text string) []struct{ label, value string } {
 			continue
 		}
 		out = append(out, struct{ label, value string }{"high-entropy " + key, val})
+	}
+	return out
+}
+
+// envStyleRe matches FOO_TOKEN=value assignments, as they appear in Bash
+// output and .env contents, which the JSON key/value pass cannot see.
+var envStyleRe = regexp.MustCompile(`\b[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY)[A-Z0-9_]*\s*=\s*['"]?([A-Za-z0-9+/_=-]{20,})`)
+
+var placeholderRe = regexp.MustCompile(`(?i)example|xxxx|your|dummy|test|…|placeholder|changeme`)
+
+// scanEnvStyle reports an assigned value only when it is random-looking: high
+// entropy, both letters and digits, and no placeholder words. The raw regex
+// alone hits hundreds of config lines.
+func scanEnvStyle(text string) []struct{ label, value string } {
+	var out []struct{ label, value string }
+	for _, m := range envStyleRe.FindAllStringSubmatch(text, -1) {
+		v := m[1]
+		if !isHighEntropy(v) || !strings.ContainsAny(v, "0123456789") ||
+			strings.IndexFunc(v, unicode.IsLetter) < 0 || placeholderRe.MatchString(v) {
+			continue
+		}
+		out = append(out, struct{ label, value string }{"env-style secret", v})
 	}
 	return out
 }
@@ -303,6 +333,11 @@ func scanTraces(files []traceFile, ignoreISS []string) []credential {
 					label = jwtLabel(cp.Label, m, ignoreISS)
 				case "Bearer Token":
 					label = jwtLabel(cp.Label, m[7:], ignoreISS) // strip "Bearer " or "bearer "
+				case "OpenAI Key":
+					if strings.HasPrefix(m, "sk-proj-") {
+						continue // reported as an OpenAI project key
+					}
+					label = cp.Label
 				default:
 					label = cp.Label
 				}
@@ -315,6 +350,11 @@ func scanTraces(files []traceFile, ignoreISS []string) []credential {
 
 		// Pass 2: entropy — catches secrets with no recognisable prefix.
 		for _, e := range scanEntropy(text) {
+			add(&hits, tf, e.label, e.value)
+		}
+
+		// Pass 3: env-style assignments.
+		for _, e := range scanEnvStyle(text) {
 			add(&hits, tf, e.label, e.value)
 		}
 	}
