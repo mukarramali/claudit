@@ -224,7 +224,7 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 	section("WHAT CLAUDE PRODUCED", "  generated once, then replayed", by[outKind], grand)
 	section("WHAT YOU TYPED", "", by[promptKind], grand)
 
-	section("WORK DRIVEN BY PLUGINS AND SKILLS", "  calls a plugin or skill caused, at their full cost", workDriven(inWindow(all, since)), grand)
+	pluginTable(all, since, into)
 
 	yours := 0.0
 	for _, g := range into {
@@ -333,6 +333,24 @@ func aliasOf(srv string, tools map[string]map[string]bool) string {
 // called. Their share of the listing cost is proportional to what their entries
 // add to it.
 func idleMCP(all []Trajectory, since time.Time, listingCost float64) (idle []group, total float64, listed, used int) {
+	cost, tokens, everUsed := mcpTax(all, since, listingCost)
+	for srv, c := range cost {
+		listed++
+		if everUsed[srv] {
+			used++
+			continue
+		}
+		idle = append(idle, group{Name: srv, Tok: tokens[srv], Cost: c})
+		total += c
+	}
+	sort.Slice(idle, func(i, j int) bool { return idle[i].Cost > idle[j].Cost })
+	return idle, total, listed, used
+}
+
+// mcpTax splits the MCP listing cost across servers by what each adds to it.
+// Aliases are resolved over every session, not only the window: a connector's
+// named form may only appear in older ones.
+func mcpTax(all []Trajectory, since time.Time, listingCost float64) (cost map[string]float64, tokens map[string]int, used map[string]bool) {
 	tools := map[string]map[string]bool{}
 	for _, t := range all {
 		for srv, l := range t.Listed {
@@ -342,38 +360,25 @@ func idleMCP(all []Trajectory, since time.Time, listingCost float64) (idle []gro
 			maps.Copy(tools[srv], l.Tools)
 		}
 	}
-	tokens, everUsed := map[string]int{}, map[string]bool{}
-	for _, t := range all {
-		if !t.Start.IsZero() && t.Start.Before(since) {
-			continue
-		}
+	tokens, used = map[string]int{}, map[string]bool{}
+	for _, t := range inWindow(all, since) {
 		for srv, l := range t.Listed {
 			srv = aliasOf(srv, tools)
 			tokens[srv] = max(tokens[srv], l.Tok) // the listing is the same each session, not cumulative
 		}
 		for srv := range t.UsedMCP {
-			everUsed[aliasOf(srv, tools)] = true
+			used[aliasOf(srv, tools)] = true
 		}
 	}
 	listedTok := 0
 	for _, n := range tokens {
 		listedTok += n
 	}
+	cost = map[string]float64{}
 	for srv, n := range tokens {
-		listed++
-		if everUsed[srv] {
-			used++
-			continue
-		}
-		cost := 0.0
-		if listedTok > 0 {
-			cost = listingCost * float64(n) / float64(listedTok)
-		}
-		idle = append(idle, group{Name: srv, Tok: n, Cost: cost})
-		total += cost
+		cost[srv] = listingCost * float64(n) / float64(max(listedTok, 1))
 	}
-	sort.Slice(idle, func(i, j int) bool { return idle[i].Cost > idle[j].Cost })
-	return idle, total, listed, used
+	return cost, tokens, used
 }
 
 // depthCurve is the average real input per call, bucketed by how deep into the
@@ -455,12 +460,12 @@ func inWindow(all []Trajectory, since time.Time) []Trajectory {
 	return out
 }
 
-func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
-	all = inWindow(all, since)
+func whatToChange(every []Trajectory, since time.Time, into map[string]*group) {
+	all := inWindow(every, since)
 	var fs []finding
 	var good []string
 
-	if idle, total, listed, used := idleMCP(all, since, mcpListingCost(into)); len(idle) > 0 {
+	if idle, total, listed, used := idleMCP(every, since, mcpListingCost(into)); len(idle) > 0 {
 		names := []string{}
 		for _, g := range idle[:min(2, len(idle))] {
 			names = append(names, clip(g.Name, 20))
@@ -990,19 +995,18 @@ func pluginOf(name string) string {
 	return p
 }
 
-// idleListings is the MCP lesson for skills and agents: every listed one rides
-// every call, used or not, priced by its line's share of its listing. Plugins
-// none of whose skills, agents or MCP servers were used are named, since
-// disabling one is a single command.
-func idleListings(all []Trajectory, into map[string]*group) (finding, bool) {
-	skills, agents, used := map[string]int{}, map[string]int{}, map[string]bool{}
-	pluginUsed := map[string]bool{}
+// listingTax prices every listed skill and agent by its line's share of its
+// listing, and says which were used: a Skill or Agent call, or the slash
+// command of the same name.
+func listingTax(all []Trajectory, into map[string]*group) (tax map[string]float64, used map[string]bool, listed map[string]map[string]int) {
+	listed = map[string]map[string]int{"skill listing": {}, "subagent listing": {}}
+	used = map[string]bool{}
 	for _, t := range all {
 		for k, n := range t.Skills {
-			skills[k] = max(skills[k], n)
+			listed["skill listing"][k] = max(listed["skill listing"][k], n)
 		}
 		for k, n := range t.Agents {
-			agents[k] = max(agents[k], n)
+			listed["subagent listing"][k] = max(listed["subagent listing"][k], n)
 		}
 		for k := range t.Invoked {
 			used[k] = true
@@ -1010,63 +1014,75 @@ func idleListings(all []Trajectory, into map[string]*group) (finding, bool) {
 		for k := range t.Commands {
 			used[strings.TrimPrefix(k, "/")] = true
 		}
-		for srv := range t.UsedMCP {
-			if p, ok := strings.CutPrefix(srv, "plugin_"); ok {
-				p, _, _ = strings.Cut(p, "_")
-				pluginUsed[p] = true
-			}
-		}
 	}
-	cost := func(kind string) float64 {
-		if g := into[setup+"\x00"+kind]; g != nil {
-			return g.Cost
-		}
-		return 0
-	}
-	type plugin struct {
-		n    int
-		cost float64
-	}
-	plugins := map[string]*plugin{}
-	total := 0.0
-	idle := func(listed map[string]int, listingCost float64) (n int) {
+	tax = map[string]float64{}
+	for kind, names := range listed {
+		g := into[setup+"\x00"+kind]
 		tok := 0
-		for _, v := range listed {
+		for _, v := range names {
 			tok += v
 		}
-		for name, v := range listed {
-			if p := pluginOf(name); used[name] {
-				pluginUsed[p] = true
-				continue
+		for name, v := range names {
+			if g != nil && tok > 0 {
+				tax[name] += g.Cost * float64(v) / float64(tok)
 			}
-			n++
-			c := listingCost * float64(v) / float64(max(tok, 1))
-			total += c
-			if p := pluginOf(name); p != "" {
-				if plugins[p] == nil {
-					plugins[p] = &plugin{}
-				}
-				plugins[p].n++
-				plugins[p].cost += c
+		}
+	}
+	return tax, used, listed
+}
+
+// mcpPlugin is the plugin behind a plugin_<name>_<server> MCP server, or "".
+func mcpPlugin(srv string) string {
+	p, ok := strings.CutPrefix(srv, "plugin_")
+	if !ok {
+		return ""
+	}
+	p, _, _ = strings.Cut(p, "_")
+	return p
+}
+
+// idleListings is the MCP lesson for skills and agents: every listed one rides
+// every call, used or not. Plugins none of whose skills, agents or MCP servers
+// were used are named, since disabling one is a single command.
+func idleListings(all []Trajectory, into map[string]*group) (finding, bool) {
+	tax, used, listed := listingTax(all, into)
+	pluginUsed := map[string]bool{}
+	for _, t := range all {
+		for srv := range t.UsedMCP {
+			pluginUsed[mcpPlugin(srv)] = true
+		}
+	}
+	for name := range used {
+		pluginUsed[pluginOf(name)] = true
+	}
+	idle := func(kind string) (n int) {
+		for name := range listed[kind] {
+			if !used[name] {
+				n++
 			}
 		}
 		return n
 	}
-	idleSkills := idle(skills, cost("skill listing"))
-	idleAgents := idle(agents, cost("subagent listing"))
+	idleCost, total := map[string]float64{}, 0.0
+	for name, c := range tax {
+		if !used[name] {
+			total += c
+			idleCost[pluginOf(name)] += c
+		}
+	}
 	if total < 0.01 {
 		return finding{}, false
 	}
 	var unused []string
-	for p := range plugins {
-		if !pluginUsed[p] {
+	for p := range idleCost {
+		if p != "" && !pluginUsed[p] {
 			unused = append(unused, p)
 		}
 	}
-	slices.SortFunc(unused, func(a, b string) int { return cmp.Compare(plugins[b].cost, plugins[a].cost) })
+	slices.SortFunc(unused, func(a, b string) int { return cmp.Compare(idleCost[b], idleCost[a]) })
 	var names []string
 	for _, p := range unused[:min(2, len(unused))] {
-		names = append(names, fmt.Sprintf("%s %s", clip(p, 20), money(plugins[p].cost)))
+		names = append(names, fmt.Sprintf("%s %s", clip(p, 20), money(idleCost[p])))
 	}
 	if len(unused) > 2 {
 		names = append(names, fmt.Sprintf("+%d", len(unused)-2))
@@ -1077,9 +1093,10 @@ func idleListings(all []Trajectory, into map[string]*group) (finding, bool) {
 	}
 	detail = append(detail, "/plugin disable <name>, or authors: disable-model-invocation.")
 	return finding{
-		Headline: fmt.Sprintf("%d of %d skills and %d of %d agents were never used", idleSkills, len(skills), idleAgents, len(agents)),
-		Save:     total,
-		Detail:   detail,
+		Headline: fmt.Sprintf("%d of %d skills and %d of %d agents were never used",
+			idle("skill listing"), len(listed["skill listing"]), idle("subagent listing"), len(listed["subagent listing"])),
+		Save:   total,
+		Detail: detail,
 	}, true
 }
 
@@ -1200,4 +1217,70 @@ func facetLine(all []Trajectory, dir string) string {
 		}
 	}
 	return line
+}
+
+// pluginTable pairs what each plugin costs to have installed — its skills',
+// agents' and MCP servers' share of the listings on every call — with the work
+// it drove, Claude Code's own attribution of calls. Standalone skills are rows
+// of their own.
+func pluginTable(every []Trajectory, since time.Time, into map[string]*group) {
+	all := inWindow(every, since)
+	type row struct {
+		tax, work    float64
+		listed, used int
+	}
+	rows := map[string]*row{}
+	at := func(k string) *row {
+		if rows[k] == nil {
+			rows[k] = &row{}
+		}
+		return rows[k]
+	}
+	tax, used, _ := listingTax(all, into)
+	for name, c := range tax {
+		k := cmp.Or(pluginOf(name), "skill "+name)
+		r := at(k)
+		r.tax += c
+		r.listed++
+		if used[name] {
+			r.used++
+		}
+	}
+	mcpCost, _, mcpUsed := mcpTax(every, since, mcpListingCost(into))
+	for srv, c := range mcpCost {
+		if p := mcpPlugin(srv); p != "" {
+			r := at(p)
+			r.tax += c
+			if mcpUsed[srv] {
+				r.used++
+			}
+		}
+	}
+	for _, g := range workDriven(all) {
+		at(g.Name).work += g.Cost
+	}
+	keys := slices.SortedFunc(maps.Keys(rows), func(a, b string) int {
+		return cmp.Compare(rows[b].tax+rows[b].work, rows[a].tax+rows[a].work)
+	})
+	if len(keys) == 0 {
+		return
+	}
+	fmt.Printf("\n  %-38s %12s %12s\n", "PLUGINS AND SKILLS", "listing tax", "work driven")
+	fmt.Printf("  %s\n", "  on every call, used or not · calls it drove")
+	for _, k := range keys[:min(topN, len(keys))] {
+		r := rows[k]
+		name := k
+		if r.listed > 1 && r.used == 0 {
+			name = fmt.Sprintf("%s · 0 of %d used", clip(k, 24), r.listed)
+		}
+		fmt.Printf("  %-38s %12s %12s\n", clip(name, 38), money(r.tax), money(r.work))
+	}
+	if rest := len(keys) - topN; rest > 0 {
+		tx, wk := 0.0, 0.0
+		for _, k := range keys[topN:] {
+			tx += rows[k].tax
+			wk += rows[k].work
+		}
+		fmt.Printf("  %-38s %12s %12s\n", fmt.Sprintf("…and %d more", rest), money(tx), money(wk))
+	}
 }

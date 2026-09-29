@@ -707,3 +707,18 @@ func TestFacetLine(t *testing.T) {
 		t.Errorf("facetLine with empty dir returned %q, want empty", line)
 	}
 }
+
+// A connector's named form may only appear before the window; the UUID alias
+// inside the window must still resolve to it.
+func TestMCPAliasAcrossWindow(t *testing.T) {
+	now := time.Now()
+	old := Trajectory{Start: now.AddDate(0, 0, -30), Listed: map[string]*listing{"claude_ai_Notion": {Tok: 10, Tools: map[string]bool{"search": true}}}}
+	recent := Trajectory{Start: now, Listed: map[string]*listing{"7dedc1d6-06bc-4a1e": {Tok: 10, Tools: map[string]bool{"search": true}}},
+		UsedMCP: map[string]bool{"claude_ai_Notion": true}}
+	if idle, _, listed, _ := idleMCP([]Trajectory{old, recent}, now.AddDate(0, 0, -1), 1); len(idle) != 0 || listed != 1 {
+		t.Errorf("idle %v listed %d; want the alias merged into the used named server", idle, listed)
+	}
+	if mcpPlugin("plugin_ava-analytics_snowflake-mcp") != "ava-analytics" || mcpPlugin("claude_ai_Slack") != "" {
+		t.Error("mcpPlugin misreads plugin server names")
+	}
+}

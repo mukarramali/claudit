@@ -49,7 +49,7 @@ Built on `feat/v2`, one commit per item or pair, each checked against
 |---|---|---|
 | 0.1 subagent transcripts | done | +10 runs, +$2 over 3 days; all time 95 runs |
 | 0.2 per-call pricing | done | 3-day total $12 → $22: Opus 5.5 and dated Haiku ids had been $0; all time $327 → $409 |
-| 0.3 idle MCP, MCP only | done | headline $3.75 → $0.90 (3 days), $15 all time; UUID aliases merge at ≥80% tool overlap (exact sets never match) |
+| 0.3 idle MCP, MCP only | done (+ review fix: aliases resolve over all history) | headline $3.75 → $0.90 (3 days), $15 all time; UUID aliases merge at ≥80% tool overlap (exact sets never match) |
 | 0.4 CLAUDE.md once | done | CLAUDE.md (project) 10.4k → 6.3k tokens; opaque "instructions" row split per file |
 | 0.5 harness ledger | done | +8% all time; the ledger includes subagent runs (closer, and above them in all but 2 of 155 sessions) |
 | 1.1 inherited subagents | done | $31 of $42 on the main model all time |
@@ -60,7 +60,7 @@ Built on `feat/v2`, one commit per item or pair, each checked against
 | 1.6 failed tool calls | **needs review** | the amount is the cost of recovering, not a saving; "Bash 131" names no fix |
 | 1.7 going well | done | `/clear` read from `<command-name>` (42) — agrees with `SessionStart:clear` hooks (43) |
 | 2.1 listed never used | done | 117 of 136 skills, 15 of 21 agents, $16 |
-| 2.2 work driven | **needs review** | section built; the `listing tax` column was skipped (needs a two-value row) |
+| 2.2 work driven | done | PLUGINS AND SKILLS table: listing tax vs work driven, e.g. flagdexter $2.85 listed vs $2.09 driven |
 | 2.3 cache-miss reasons | done, rarely visible | $3.59 all time, ranks 8th here; replaces the guessed lesson when reasons exist |
 | 2.4 cost per PR | done | 17 PRs, median $1.43 |
 | 2.5 setup health | done | architecture-guidance fails in 49 of 171 sessions; Stop hook 12.8 s avg |
