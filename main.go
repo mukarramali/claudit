@@ -96,6 +96,8 @@ type Trajectory struct {
 	Listed         map[string]*listing // MCP server -> what it adds to the tool listing
 	UsedMCP        map[string]bool     // MCP server -> actually called at least once
 	FailedMCP      map[string]bool     // MCP server -> failed to connect at least once
+	Skills, Agents map[string]int      // skill / agent type -> tokens its listing line adds
+	Invoked        map[string]bool     // skills and agent types actually used
 	Hooks          map[string]*hookStats
 	Commands       map[string]int     // slash command name -> times run
 	Ledger         float64            // Claude Code's own running cost for the session
@@ -144,6 +146,35 @@ func (t *Trajectory) noteListing(raw json.RawMessage) {
 		return
 	}
 	switch a.Type {
+	case "skill_listing":
+		// One "- name" or "- name: description" line per skill; names hold ':'
+		// themselves, so the separator is ": ".
+		var c struct {
+			Content string `json:"content"`
+		}
+		json.Unmarshal(raw, &c)
+		for _, line := range strings.Split(c.Content, "\n") {
+			if name, ok := strings.CutPrefix(line, "- "); ok {
+				name, _, _ = strings.Cut(name, ": ")
+				if t.Skills == nil {
+					t.Skills = map[string]int{}
+				}
+				t.Skills[name] = max(t.Skills[name], countTokens(line))
+			}
+		}
+	case "agent_listing_delta":
+		var c struct {
+			Types []string `json:"addedTypes"`
+		}
+		json.Unmarshal(raw, &c)
+		for i, typ := range c.Types {
+			if i < len(a.Lines) {
+				if t.Agents == nil {
+					t.Agents = map[string]int{}
+				}
+				t.Agents[typ] = max(t.Agents[typ], countTokens(a.Lines[i]))
+			}
+		}
 	case "deferred_tools_delta":
 		for i, name := range a.Names {
 			srv := mcpServer(name)
@@ -517,6 +548,22 @@ type state struct {
 	tools     map[string]string // tool_use id -> label, to name tool results
 }
 
+// noteInvoked marks the skill or agent type a tool call used.
+func (t *Trajectory) noteInvoked(b block) {
+	var in struct {
+		Skill string `json:"skill"`
+		Type  string `json:"subagent_type"`
+	}
+	if (b.Name == "Skill" || b.Name == "Agent" || b.Name == "Task") && json.Unmarshal(b.Input, &in) == nil {
+		if name := cmp.Or(in.Skill, in.Type); name != "" {
+			if t.Invoked == nil {
+				t.Invoked = map[string]bool{}
+			}
+			t.Invoked[name] = true
+		}
+	}
+}
+
 var commandRe = regexp.MustCompile(`<command-name>(/[^<\s]+)</command-name>`)
 
 // noteCommand counts a slash command by name. The rest of the record is
@@ -683,6 +730,7 @@ func (t *Trajectory) apply(s *state, r record) {
 					}
 					t.UsedMCP[srv] = true
 				}
+				t.noteInvoked(b)
 				t.add(outKind, "asking for "+label, n, true)
 			case "thinking":
 				c.R += n

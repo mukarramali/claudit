@@ -487,6 +487,9 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 		}
 	}
 
+	if f, ok := idleListings(all, into); ok {
+		fs = append(fs, f)
+	}
 	good = append(good, habits(all)...)
 	fs = append(fs, newerModels(all)...)
 	if f, ok, g := inheritedSubagents(all); ok {
@@ -957,4 +960,107 @@ func setupHealth(all []Trajectory) []string {
 		out = append(out, l.text)
 	}
 	return out
+}
+
+// pluginOf is the plugin that ships a skill or agent: the part of
+// plugin:name before the colon, or "" for a standalone one.
+func pluginOf(name string) string {
+	p, _, ok := strings.Cut(name, ":")
+	if !ok {
+		return ""
+	}
+	return p
+}
+
+// idleListings is the MCP lesson for skills and agents: every listed one rides
+// every call, used or not, priced by its line's share of its listing. Plugins
+// none of whose skills, agents or MCP servers were used are named, since
+// disabling one is a single command.
+func idleListings(all []Trajectory, into map[string]*group) (finding, bool) {
+	skills, agents, used := map[string]int{}, map[string]int{}, map[string]bool{}
+	pluginUsed := map[string]bool{}
+	for _, t := range all {
+		for k, n := range t.Skills {
+			skills[k] = max(skills[k], n)
+		}
+		for k, n := range t.Agents {
+			agents[k] = max(agents[k], n)
+		}
+		for k := range t.Invoked {
+			used[k] = true
+		}
+		for k := range t.Commands {
+			used[strings.TrimPrefix(k, "/")] = true
+		}
+		for srv := range t.UsedMCP {
+			if p, ok := strings.CutPrefix(srv, "plugin_"); ok {
+				p, _, _ = strings.Cut(p, "_")
+				pluginUsed[p] = true
+			}
+		}
+	}
+	cost := func(kind string) float64 {
+		if g := into[setup+"\x00"+kind]; g != nil {
+			return g.Cost
+		}
+		return 0
+	}
+	type plugin struct {
+		n    int
+		cost float64
+	}
+	plugins := map[string]*plugin{}
+	total := 0.0
+	idle := func(listed map[string]int, listingCost float64) (n int) {
+		tok := 0
+		for _, v := range listed {
+			tok += v
+		}
+		for name, v := range listed {
+			if p := pluginOf(name); used[name] {
+				pluginUsed[p] = true
+				continue
+			}
+			n++
+			c := listingCost * float64(v) / float64(max(tok, 1))
+			total += c
+			if p := pluginOf(name); p != "" {
+				if plugins[p] == nil {
+					plugins[p] = &plugin{}
+				}
+				plugins[p].n++
+				plugins[p].cost += c
+			}
+		}
+		return n
+	}
+	idleSkills := idle(skills, cost("skill listing"))
+	idleAgents := idle(agents, cost("subagent listing"))
+	if total < 0.01 {
+		return finding{}, false
+	}
+	var unused []string
+	for p := range plugins {
+		if !pluginUsed[p] {
+			unused = append(unused, p)
+		}
+	}
+	slices.SortFunc(unused, func(a, b string) int { return cmp.Compare(plugins[b].cost, plugins[a].cost) })
+	var names []string
+	for _, p := range unused[:min(2, len(unused))] {
+		names = append(names, fmt.Sprintf("%s %s", clip(p, 20), money(plugins[p].cost)))
+	}
+	if len(unused) > 2 {
+		names = append(names, fmt.Sprintf("+%d", len(unused)-2))
+	}
+	detail := []string{"Plugins unused: " + strings.Join(names, ", ")}
+	if len(unused) == 0 {
+		detail = []string{"Every plugin listing them was used at least once."}
+	}
+	detail = append(detail, "/plugin disable <name>, or authors: disable-model-invocation.")
+	return finding{
+		Headline: fmt.Sprintf("%d of %d skills and %d of %d agents were never used", idleSkills, len(skills), idleAgents, len(agents)),
+		Save:     total,
+		Detail:   detail,
+	}, true
 }

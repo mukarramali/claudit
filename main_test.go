@@ -432,3 +432,20 @@ func TestSetupHealth(t *testing.T) {
 		t.Errorf("setupHealth printed 1/100 hook failure; got %v", lines)
 	}
 }
+
+func TestIdleListings(t *testing.T) {
+	old := countTokens
+	countTokens = func(s string) int { return len(strings.Fields(s)) }
+	t.Cleanup(func() { countTokens = old })
+	const tr = `
+{"type":"attachment","attachment":{"type":"skill_listing","content":"- p:a: one two\n- p:b: one two three four five six\n- solo: x"}}
+{"type":"assistant","message":{"id":"m","model":"claude-sonnet-5","content":[{"type":"tool_use","id":"t","name":"Skill","input":{"skill":"solo"}}],"usage":{"input_tokens":1}}}
+`
+	tr0 := parseClaude([]byte(tr), "s")[0]
+	into := map[string]*group{setup + "\x00skill listing": {Cost: 15}}
+	f, ok := idleListings([]Trajectory{tr0}, into)
+	// lines: "- p:a: one two" 4 words, "- p:b: ..." 8, "- solo: x" 3; p:a and p:b idle = 12/15 of $15
+	if !ok || f.Save != 12 || !strings.HasPrefix(f.Headline, "2 of 3 skills") || !strings.Contains(f.Detail[0], "unused: p $12") {
+		t.Errorf("idleListings = %+v %v, want 2 of 3 idle at $12, plugin p unused", f, ok)
+	}
+}
