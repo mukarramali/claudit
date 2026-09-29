@@ -373,6 +373,7 @@ type record struct {
 	IsMeta           bool            `json:"isMeta"`
 	IsCompactSummary bool            `json:"isCompactSummary"`
 	Effort           string          `json:"effort"`
+	PermissionMode   string          `json:"permissionMode"`
 	AttrPlugin       string          `json:"attributionPlugin"`
 	AttrSkill        string          `json:"attributionSkill"`
 	PRNumber         int             `json:"prNumber"`
@@ -1258,6 +1259,9 @@ func main() {
 		if lines := personalLines(scanPersonal(tfiles)); len(lines) > 0 {
 			fmt.Printf("  PERSONAL DATA — checksum-valid numbers, counts only\n%s\n", strings.Join(lines, "\n"))
 			fmt.Printf("  Test fixtures count too.\n\n")
+		}
+		if lines := riskyRuns(tfiles); len(lines) > 0 {
+			fmt.Printf("  RAN WITHOUT ASKING — risky shell commands, no prompt\n%s\n\n", strings.Join(lines, "\n"))
 		}
 		if skipped > 0 {
 			fmt.Printf("(%d older file%s skipped; -days 0 to scan everything)\n", skipped, plural(skipped))

@@ -774,3 +774,73 @@ func personalLines(counts map[string]map[string]int) []string {
 	}
 	return out
 }
+
+// ---------- what ran without asking ----------
+
+var riskyCmds = []struct {
+	class string
+	re    *regexp.Regexp
+}{
+	{"rm -rf", regexp.MustCompile(`\brm\s+-[a-zA-Z]*(r[a-zA-Z]*f|f[a-zA-Z]*r)`)},
+	{"force push", regexp.MustCompile(`git\s+push\b.*(--force\b|-f\b|--force-with-lease)`)},
+	{"reset --hard", regexp.MustCompile(`git\s+reset\s+--hard`)},
+	{"curl | sh", regexp.MustCompile(`(curl|wget)\b[^|]*\|\s*(ba|z)?sh\b`)},
+	{"sudo", regexp.MustCompile(`(^|[;&|]\s*)sudo\b`)},
+	{"chmod 777", regexp.MustCompile(`chmod\s+(-R\s+)?777`)},
+	{"DROP TABLE", regexp.MustCompile(`(?i)drop\s+table`)},
+}
+
+// riskyRuns counts risky shell commands issued in a mode that does not prompt,
+// by class and mode. The command line itself can carry secrets or paths, so
+// only its class is reported.
+// ponytail: a command the auto-mode classifier blocked still counts; telling
+// blocked from run needs the tool_result's denial text.
+func riskyRuns(files []traceFile) []string {
+	type key struct{ class, mode string }
+	count, sessions := map[key]int{}, map[key]map[string]bool{}
+	for _, tf := range files {
+		mode := "default"
+		for _, line := range bytes.Split(tf.Data, []byte("\n")) {
+			var r record
+			if json.Unmarshal(line, &r) != nil {
+				continue
+			}
+			mode = cmp.Or(r.PermissionMode, mode)
+			if r.Type != "assistant" || (mode != "auto" && mode != "acceptEdits" && mode != "bypassPermissions") {
+				continue
+			}
+			var bs []block
+			json.Unmarshal(r.Message.Content, &bs)
+			for _, b := range bs {
+				var in struct {
+					Command string `json:"command"`
+				}
+				if b.Type != "tool_use" || b.Name != "Bash" || json.Unmarshal(b.Input, &in) != nil {
+					continue
+				}
+				for _, rc := range riskyCmds {
+					if rc.re.MatchString(in.Command) {
+						k := key{rc.class, mode}
+						count[k]++
+						if sessions[k] == nil {
+							sessions[k] = map[string]bool{}
+						}
+						sessions[k][tf.Session[:min(8, len(tf.Session))]] = true
+						break
+					}
+				}
+			}
+		}
+	}
+	keys := slices.SortedFunc(maps.Keys(count), func(a, b key) int { return cmp.Or(cmp.Compare(count[b], count[a]), cmp.Compare(a.class, b.class)) })
+	var out []string
+	for _, k := range keys {
+		ids := slices.Sorted(maps.Keys(sessions[k]))
+		more := ""
+		if len(ids) > 2 {
+			ids, more = ids[:2], fmt.Sprintf(" +%d", len(ids)-2)
+		}
+		out = append(out, fmt.Sprintf("  %-13s %3d× in %-11s sessions %s%s", k.class, count[k], k.mode, strings.Join(ids, ", "), more))
+	}
+	return out
+}

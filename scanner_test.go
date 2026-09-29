@@ -413,3 +413,45 @@ func TestProvenance(t *testing.T) {
 		t.Fatalf("hits = %+v, want source Read .env and dest MCP claude_ai_Slack", hits)
 	}
 }
+
+func TestRiskyRunsAuto(t *testing.T) {
+	// Fixture: permission-mode auto record, then Bash tool_use with rm -rf
+	fixture := strings.Join([]string{
+		`{"type":"permission-mode","permissionMode":"auto"}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm -rf build"}}]}}`,
+	}, "\n")
+	tf := traceFile{
+		Project: "proj",
+		Session: "sess1234567890abcdef",
+		Data:    []byte(fixture),
+	}
+	lines := riskyRuns([]traceFile{tf})
+
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "rm -rf") {
+		t.Errorf("missing rm -rf in output: %q", lines[0])
+	}
+	if !strings.Contains(lines[0], "auto") {
+		t.Errorf("missing auto mode in output: %q", lines[0])
+	}
+	if strings.Contains(lines[0], "build") {
+		t.Errorf("command text leaked into output: %q", lines[0])
+	}
+}
+
+func TestRiskyRunsDefaultModeIgnored(t *testing.T) {
+	// Same command but in default mode (starts as default, no mode change)
+	fixture := `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm -rf build"}}]}}`
+	tf := traceFile{
+		Project: "proj",
+		Session: "sess1234567890abcdef",
+		Data:    []byte(fixture),
+	}
+	lines := riskyRuns([]traceFile{tf})
+
+	if lines != nil {
+		t.Errorf("expected nil for default mode, got %v", lines)
+	}
+}
