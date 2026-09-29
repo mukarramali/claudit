@@ -242,7 +242,7 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 // lesson prints one numbered finding: a headline, an optional amount, and at
 // most a couple of supporting lines.
 func lesson(n int, headline, amount string, detail ...string) {
-	if amount == "" {
+	if amount == "" || amount == "-" {
 		fmt.Printf("\n  %d  %s\n", n, headline)
 	} else {
 		fmt.Printf("\n  %d  %-56s %8s\n", n, headline, amount)
@@ -396,14 +396,32 @@ func mcpListingCost(into map[string]*group) float64 {
 	return c
 }
 
+// finding is one candidate for WHAT TO CHANGE. The biggest saving prints
+// first; Tag replaces the amount for findings that have none.
+type finding struct {
+	Headline string
+	Save     float64
+	Tag      string
+	Detail   []string
+}
+
+// inWindow is the trajectories that started inside the report window.
+func inWindow(all []Trajectory, since time.Time) []Trajectory {
+	var out []Trajectory
+	for _, t := range all {
+		if t.Start.IsZero() || !t.Start.Before(since) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
-	listingCost := mcpListingCost(into)
+	all = inWindow(all, since)
+	var fs []finding
+	var good []string
 
-	fmt.Printf("\n%s\n  WHAT TO CHANGE\n%s\n", rule, rule)
-	n := 0
-
-	if idle, total, listed, used := idleMCP(all, since, listingCost); len(idle) > 0 {
-		n++
+	if idle, total, listed, used := idleMCP(all, since, mcpListingCost(into)); len(idle) > 0 {
 		names := []string{}
 		for _, g := range idle[:min(2, len(idle))] {
 			names = append(names, clip(g.Name, 20))
@@ -411,45 +429,53 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 		if rest := len(idle) - len(names); rest > 0 {
 			names = append(names, fmt.Sprintf("+%d more", rest))
 		}
-		lesson(n, fmt.Sprintf("%d of %d MCP servers were never called", len(idle), listed), money(total),
+		fs = append(fs, finding{fmt.Sprintf("%d of %d MCP servers were never called", len(idle), listed), total, "", []string{
 			fmt.Sprintf("Their tool listings ride every call anyway. You used %d.", used),
-			"Idle: "+strings.Join(names, ", "))
+			"Idle: " + strings.Join(names, ", ")}})
 	}
 
 	if rows, mult := depthCurve(all, since); len(rows) > 1 {
-		n++
 		head := "Later calls in a session cost more than early ones"
 		if mult > 1.5 {
 			head = fmt.Sprintf("A call late in a session costs %.1fx an early one", mult)
 		}
-		lesson(n, head, "",
-			"per call:  "+strings.Join(rows, "   "),
-			"Every turn resends the ones before it. /clear between tasks.")
+		fs = append(fs, finding{head, 0, "", []string{
+			"per call:  " + strings.Join(rows, "   "),
+			"Every turn resends the ones before it. /clear between tasks."}})
 	}
 
 	writes, reads := 0, 0
 	for _, t := range all {
-		if !t.Start.IsZero() && t.Start.Before(since) {
-			continue
-		}
 		o := sum(t)
 		writes += o.ProviderCacheMake
 		reads += o.ProviderCacheRead
 	}
 	if w := writes + reads; w > 0 {
-		n++
 		share := 100 * float64(writes) / float64(w)
 		switch {
 		case share < 15:
-			lesson(n, fmt.Sprintf("Cache is healthy — %.0f%% read, %.0f%% rewritten", 100-share, share), "good")
+			good = append(good, fmt.Sprintf("Cache is healthy — %.0f%% read, %.0f%% rewritten", 100-share, share))
 		case share < 40:
-			lesson(n, fmt.Sprintf("Cache misses more than it should — %.0f%% rewritten", share), "check",
+			fs = append(fs, finding{fmt.Sprintf("Cache misses more than it should — %.0f%% rewritten", share), 0, "check", []string{
 				"Something near the start of your context changes between calls.",
-				"A hook that emits a timestamp or a counter will do this.")
+				"A hook that emits a timestamp or a counter will do this."}})
 		default:
-			lesson(n, fmt.Sprintf("Cache is barely working — %.0f%% rewritten", share), "fix",
+			fs = append(fs, finding{fmt.Sprintf("Cache is barely working — %.0f%% rewritten", share), 0, "fix", []string{
 				"Cached input costs 0.1x to read but 1.25-2x to write. Something in",
-				"your system prompt, CLAUDE.md or a hook changes on every call.")
+				"your system prompt, CLAUDE.md or a hook changes on every call."}})
+		}
+	}
+
+	// ponytail: stable sort keeps insertion order among amount-less findings.
+	sort.SliceStable(fs, func(i, j int) bool { return fs[i].Save > fs[j].Save })
+	fmt.Printf("\n%s\n  WHAT TO CHANGE\n%s\n", rule, rule)
+	for i, f := range fs[:min(5, len(fs))] {
+		lesson(i+1, f.Headline, cmp.Or(f.Tag, money(f.Save)), f.Detail...)
+	}
+	if len(good) > 0 {
+		fmt.Printf("\n  GOING WELL\n")
+		for _, g := range good[:min(3, len(good))] {
+			fmt.Printf("  ✓  %s\n", g)
 		}
 	}
 }

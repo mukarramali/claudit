@@ -56,7 +56,9 @@ type Call struct {
 	P, T, A, X       int
 	MText, MTool, R  int
 	Provider         Usage
-	Model            string
+	Model, Effort    string
+	At               time.Time
+	AfterError       string // label of the tool whose failed result this call reacted to
 	AfterCompact     bool
 	RedactedThinking int // thinking blocks whose content the provider withheld
 }
@@ -235,6 +237,7 @@ type block struct {
 	} `json:"source"`
 	ID        string `json:"id"`          // tool_use
 	ToolUseID string `json:"tool_use_id"` // tool_result
+	IsError   bool   `json:"is_error"`    // tool_result
 }
 
 func (b block) tokens() int {
@@ -277,6 +280,7 @@ type record struct {
 	IsSidechain      bool            `json:"isSidechain"`
 	IsMeta           bool            `json:"isMeta"`
 	IsCompactSummary bool            `json:"isCompactSummary"`
+	Effort           string          `json:"effort"`
 	Attachment       json.RawMessage `json:"attachment"`
 	HookContext      json.RawMessage `json:"hookAdditionalContext"`
 	Message          struct {
@@ -442,6 +446,7 @@ type state struct {
 	P, T, A   int               // new material pending since the last inference call
 	curID     string            // message.id of the call being accumulated
 	compacted bool              // a compaction happened; next call resets replay
+	failed    string            // label of a tool whose result came back is_error
 	tools     map[string]string // tool_use id -> label, to name tool results
 }
 
@@ -524,6 +529,9 @@ func (t *Trajectory) apply(s *state, r record) {
 				case b.Type == "tool_result":
 					s.T += n
 					t.add(toolKind, cmp.Or(s.tools[b.ToolUseID], "tool"), n, false)
+					if b.IsError {
+						s.failed = cmp.Or(s.tools[b.ToolUseID], "tool")
+					}
 				case r.IsMeta || r.IsCompactSummary:
 					s.A += n
 					t.add(setup, metaLabel(r, s), n, false)
@@ -547,12 +555,14 @@ func (t *Trajectory) apply(s *state, r record) {
 		// the identical usage object. Group by id or both counts inflate.
 		if r.Message.ID != s.curID {
 			s.curID = r.Message.ID
-			c := Call{P: s.P, T: s.T, A: s.A, AfterCompact: s.compacted, Model: r.Message.Model}
+			c := Call{P: s.P, T: s.T, A: s.A, AfterCompact: s.compacted, Model: r.Message.Model,
+				Effort: r.Effort, AfterError: s.failed}
+			c.At, _ = time.Parse(time.RFC3339, r.Timestamp)
 			if r.Message.Usage != nil {
 				c.Provider = *r.Message.Usage
 			}
 			t.Calls = append(t.Calls, c)
-			s.P, s.T, s.A, s.compacted = 0, 0, 0, false
+			s.P, s.T, s.A, s.compacted, s.failed = 0, 0, 0, false, ""
 			if r.Message.Model != "" && r.Message.Model != "<synthetic>" {
 				t.Model = r.Message.Model // latest real model; pricing is per call
 			}
