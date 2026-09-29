@@ -139,6 +139,32 @@ func TestSubagentFiles(t *testing.T) {
 	}
 }
 
+func TestInstructionsAttachment(t *testing.T) {
+	const tr = `
+{"type":"attachment","attachment":{"type":"instructions","files":[{"type":"User","content":"user one"},{"type":"Project","content":"proj one two"},{"type":"AutoMem","content":"auto"}]}}
+{"type":"assistant","message":{"id":"m1","model":"test","role":"assistant","content":[{"type":"text","text":"reply"}],"usage":{"input_tokens":1,"output_tokens":1}}}
+`
+	old := countTokens
+	countTokens = func(s string) int { return len(strings.Fields(s)) } // words, offline
+	t.Cleanup(func() { countTokens = old })
+
+	got := parseClaude([]byte(tr), "test")[0]
+	items := map[string]int{}
+	for _, it := range got.Items {
+		items[it.Kind+"/"+it.Name] += it.Tok
+	}
+	for k, v := range map[string]int{
+		"setup/CLAUDE.md (user)":    2,
+		"setup/CLAUDE.md (project)": 3,
+		"setup/memory (auto)":       1,
+		"output/text you read":      1,
+	} {
+		if items[k] != v {
+			t.Errorf("item %q = %d, want %d", k, items[k], v)
+		}
+	}
+}
+
 func TestPerCallPricing(t *testing.T) {
 	const tr = `
 {"type":"assistant","message":{"id":"a","model":"claude-opus-5","content":[],"usage":{"input_tokens":1000000,"output_tokens":0}}}

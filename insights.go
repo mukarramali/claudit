@@ -3,11 +3,8 @@ package main
 import (
 	"cmp"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -31,38 +28,6 @@ type group struct {
 	Cost       float64
 }
 
-// claudeMd tokenizes a CLAUDE.md once per path. It never appears in the
-// transcript — it is folded into the system prompt — so it is estimated from
-// disk and carved out of the unaccounted remainder.
-var claudeMd = func() func(string) int {
-	var mu sync.Mutex
-	seen := map[string]int{}
-	return func(path string) int {
-		mu.Lock()
-		defer mu.Unlock()
-		if n, ok := seen[path]; ok {
-			return n
-		}
-		n := 0
-		if b, err := os.ReadFile(path); err == nil {
-			n = countTokens(string(b))
-		}
-		seen[path] = n
-		return n
-	}
-}()
-
-func memoryFiles(cwd string) []string {
-	var out []string
-	if home, err := os.UserHomeDir(); err == nil {
-		out = append(out, filepath.Join(home, ".claude", "CLAUDE.md"))
-	}
-	if cwd != "" {
-		out = append(out, filepath.Join(cwd, "CLAUDE.md"))
-	}
-	return out
-}
-
 // attribute splits one session's real cost across everything that occupied its
 // context, and adds what the transcript cannot account for as its own entry.
 func attribute(t Trajectory, into map[string]*group) {
@@ -77,15 +42,6 @@ func attribute(t Trajectory, into map[string]*group) {
 	}
 
 	items := t.Items
-	for _, f := range memoryFiles(t.CWD) {
-		if n := claudeMd(f); n > 0 {
-			name := "CLAUDE.md (project)"
-			if strings.Contains(f, "/.claude/") {
-				name = "CLAUDE.md (global)"
-			}
-			items = append(items, item{Kind: setup, Name: name, Tok: n, Call: 0})
-		}
-	}
 
 	if sc := t.Scaffold; sc != nil {
 		items = append(items, item{Kind: scaffoldKind, Name: "system prompt (Claude Code)", Tok: sc.System})

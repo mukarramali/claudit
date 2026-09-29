@@ -325,6 +325,8 @@ func attachmentLabel(raw json.RawMessage) string {
 		return "token-usage reminders"
 	case "queued_command":
 		return "queued commands"
+	case "nested_memory":
+		return "CLAUDE.md (nested)"
 	case "prompt_snapshot":
 		return snapshot
 	case "":
@@ -435,6 +437,36 @@ func (t *Trajectory) apply(s *state, r record) {
 	}
 	switch r.Type {
 	case "attachment":
+		// Handle instructions attachments specially: count each file separately.
+		var a struct {
+			Type  string `json:"type"`
+			Files []struct {
+				Type    string `json:"type"`
+				Content string `json:"content"`
+			} `json:"files"`
+		}
+		if json.Unmarshal(r.Attachment, &a) == nil && a.Type == "instructions" {
+			for _, f := range a.Files {
+				n := countTokens(f.Content)
+				if n == 0 {
+					continue
+				}
+				label := "memory (" + strings.ToLower(f.Type) + ")"
+				switch f.Type {
+				case "User":
+					label = "CLAUDE.md (user)"
+				case "Project":
+					label = "CLAUDE.md (project)"
+				case "Local":
+					label = "CLAUDE.md (local)"
+				case "AutoMem":
+					label = "memory (auto)"
+				}
+				s.A += n
+				t.add(setup, label, n, false)
+			}
+			return
+		}
 		if label := attachmentLabel(r.Attachment); label == snapshot {
 			if sc := parseScaffold(r.Attachment); sc != nil && (sc.System > 0 || len(sc.Tools) > 0) {
 				t.Scaffold = sc // latest snapshot wins

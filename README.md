@@ -11,12 +11,13 @@ from `~/.claude/projects/**/*.jsonl` rather than taken on trust.
 
 ## Everything is local
 
-`claudit` runs entirely on your machine. It reads `~/.claude/projects/**/*.jsonl`
-plus the two `CLAUDE.md` files (yours and the project-level one) to estimate their
-token cost. It makes no network requests of any kind, sends nothing anywhere, and
-writes nothing to disk. It needs no API key or login. The provider usage figures in
-the report come directly from the transcript JSON that Claude Code writes locally —
-nothing is fetched from an API.
+`claudit` runs entirely on your machine. It reads `~/.claude/projects/**/*.jsonl`,
+including subagent runs under `<session>/subagents/` and the agent type from their
+`.meta.json`. It makes no network requests of any kind, sends nothing anywhere, and
+writes nothing to disk. It needs no API key or login. CLAUDE.md is not read from
+disk: each transcript records the memory files that session actually loaded. The
+provider usage figures come directly from the transcript JSON that Claude Code
+writes locally — nothing is fetched from an API.
 
 ## Build
 
