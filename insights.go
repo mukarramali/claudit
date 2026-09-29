@@ -496,8 +496,10 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 	} else if g != "" {
 		good = append(good, g)
 	}
-	if f, ok := idleRebuilds(all); ok {
-		fs = append(fs, f)
+	for _, lesson := range []func([]Trajectory) (finding, bool){idleRebuilds, maxEffort, failedTools} {
+		if f, ok := lesson(all); ok {
+			fs = append(fs, f)
+		}
 	}
 
 	// ponytail: stable sort keeps insertion order among amount-less findings.
@@ -677,5 +679,75 @@ func idleRebuilds(all []Trajectory) (finding, bool) {
 		Headline: fmt.Sprintf("Resuming idle sessions rewrote the cache %d times", short+long),
 		Save:     total,
 		Detail:   detail,
+	}, true
+}
+
+// maxEffort compares $/call at max and high effort on the same model. Max
+// calls may be the harder tasks, so the saving is an upper bound.
+func maxEffort(all []Trajectory) (finding, bool) {
+	type stats struct {
+		n    int
+		cost float64
+	}
+	groups := map[[2]string]*stats{}
+	for _, t := range all {
+		for _, c := range t.Calls {
+			k := [2]string{modelKey(c.Model), c.Effort}
+			if groups[k] == nil {
+				groups[k] = &stats{}
+			}
+			groups[k].n++
+			groups[k].cost += c.bill().total()
+		}
+	}
+	var best finding
+	for k, mx := range groups {
+		hi := groups[[2]string{k[0], "high"}]
+		if k[1] != "max" || hi == nil || mx.n < 50 || hi.n < 50 {
+			continue
+		}
+		pMax, pHigh := mx.cost/float64(mx.n), hi.cost/float64(hi.n)
+		if save := float64(mx.n) * (pMax - pHigh); pMax > pHigh*1.15 && save > best.Save {
+			best = finding{
+				Headline: fmt.Sprintf("Max effort costs %.0f%% more per call on %s", 100*(pMax/pHigh-1), pretty(k[0])),
+				Save:     save,
+				Detail: []string{
+					fmt.Sprintf("%d calls at max, %s each · %s at high", mx.n, money(pMax), money(pHigh)),
+					"Use /effort max for the task that needs it, not as a default.",
+				},
+			}
+		}
+	}
+	return best, best.Save > 0
+}
+
+// failedTools sums the calls that reacted to a tool result marked is_error:
+// reading the error and retrying is a full call each time.
+func failedTools(all []Trajectory) (finding, bool) {
+	cost, count := map[string]float64{}, map[string]int{}
+	total, n := 0.0, 0
+	for _, t := range all {
+		for _, c := range t.Calls {
+			if c.AfterError != "" {
+				v := c.bill().total()
+				cost[c.AfterError] += v
+				count[c.AfterError]++
+				total += v
+				n++
+			}
+		}
+	}
+	if total < 0.01 {
+		return finding{}, false
+	}
+	top := slices.SortedFunc(maps.Keys(cost), func(a, b string) int { return cmp.Compare(cost[b], cost[a]) })
+	var parts []string
+	for _, tl := range top[:min(2, len(top))] {
+		parts = append(parts, fmt.Sprintf("%s %d (%s)", clip(tl, 22), count[tl], money(cost[tl])))
+	}
+	return finding{
+		Headline: fmt.Sprintf("%d calls went to recovering from failed tool calls", n),
+		Save:     total,
+		Detail:   []string{strings.Join(parts, " · "), "Each failure costs a full call to read the error and retry."},
 	}, true
 }

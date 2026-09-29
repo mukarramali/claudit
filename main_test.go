@@ -293,3 +293,76 @@ func TestIdleRebuilds(t *testing.T) {
 		t.Errorf("expected no finding for 30s gap, got %+v", f2)
 	}
 }
+
+func TestMaxEffort(t *testing.T) {
+	// 60 calls at max with 1000 output tokens, 60 at high with 500 output tokens.
+	// All on claude-opus-5 ($5 in, $25 out per million).
+	max60 := make([]Call, 60)
+	high60 := make([]Call, 60)
+	for i := range max60 {
+		max60[i] = Call{Provider: Usage{Output: 1000}, Model: "claude-opus-5", Effort: "max"}
+		high60[i] = Call{Provider: Usage{Output: 500}, Model: "claude-opus-5", Effort: "high"}
+	}
+	all := []Trajectory{{Calls: append(max60, high60...)}}
+	f, ok := maxEffort(all)
+	if !ok {
+		t.Fatal("maxEffort should return true with 60 calls each")
+	}
+	// Cost per call: max = 1000 * 25 / 1e6, high = 500 * 25 / 1e6
+	pMax := 1000 * 25.0 / 1e6
+	pHigh := 500 * 25.0 / 1e6
+	wantSave := 60 * (pMax - pHigh)
+	if f.Save < wantSave*0.99 || f.Save > wantSave*1.01 {
+		t.Errorf("Save = %.8f, want ≈ %.8f", f.Save, wantSave)
+	}
+	// Same test with 40 calls each: should fail the >= 50 threshold.
+	max40 := make([]Call, 40)
+	high40 := make([]Call, 40)
+	for i := range max40 {
+		max40[i] = Call{Provider: Usage{Output: 1000}, Model: "claude-opus-5", Effort: "max"}
+		high40[i] = Call{Provider: Usage{Output: 500}, Model: "claude-opus-5", Effort: "high"}
+	}
+	all = []Trajectory{{Calls: append(max40, high40...)}}
+	_, ok = maxEffort(all)
+	if ok {
+		t.Fatal("maxEffort should return false with only 40 calls each")
+	}
+}
+
+func TestFailedTools(t *testing.T) {
+	// Fixture: tool_use, tool_result with is_error, assistant call at sonnet rate
+	const tr = `
+{"type":"assistant","message":{"id":"t1","model":"claude-sonnet-5","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}],"usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"boom"}]}}
+{"type":"assistant","message":{"id":"t2","model":"claude-sonnet-5","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":0,"output_tokens":1000000}}}
+`
+	old := countTokens
+	countTokens = func(s string) int { return len(strings.Fields(s)) }
+	t.Cleanup(func() { countTokens = old })
+
+	trs := parseClaude([]byte(tr), "test")
+	f, ok := failedTools(trs)
+	if !ok {
+		t.Fatalf("failedTools returned ok=false, want true")
+	}
+	if f.Save != 10.0 {
+		t.Errorf("Save = %v, want 10 (1M output tokens at sonnet $10/M)", f.Save)
+	}
+	if !strings.Contains(f.Detail[0], "Bash") {
+		t.Errorf("detail %q missing Bash", f.Detail[0])
+	}
+	if !strings.Contains(f.Headline, "1") {
+		t.Errorf("headline %q missing call count", f.Headline)
+	}
+
+	// Fixture without is_error
+	const noErr = `
+{"type":"assistant","message":{"id":"t1","model":"claude-sonnet-5","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}],"usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":false,"content":"ok"}]}}
+`
+	trs2 := parseClaude([]byte(noErr), "test")
+	_, ok2 := failedTools(trs2)
+	if ok2 {
+		t.Errorf("failedTools on non-error fixture returned ok=true, want false")
+	}
+}
