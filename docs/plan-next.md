@@ -65,7 +65,7 @@ Built on `feat/v2`, one commit per item or pair, each checked against
 | 2.4 cost per PR | done | 17 PRs, median $1.43 |
 | 2.5 setup health | done | architecture-guidance fails in 49 of 171 sessions; Stop hook 12.8 s avg |
 | 2.6 /insights join | done, low value | friction shown only with ≥10 sessions a side: it flipped sign between windows at ~40 |
-| 2.7 tokenizer calibration | **needs review — not merged** | fitted ratios are stable (Sonnet 1.52, Haiku 1.37, Opus 1.5–1.7), but scaled weights overshoot provider input by 28–39% (145 of 150 sessions >5% over). The deltas are prose/tool output; most weight is schema JSON and replay. Would hide the 12% unaccounted row rather than explain it |
+| 2.7 tokenizer calibration | **needs review — not merged** | Two attempts. One ratio per family (Sonnet 1.52, Haiku 1.37, Opus 1.5–1.7, stable) overshoots provider input by 28–42%. A separate scaffold ratio plus no stale-reasoning replay gets the aggregate to 1.04–1.06×, but only by cancellation: 195 of 245 sessions stay >5% over, worse than uncalibrated (132 over, 64 under). Found on the way: the first call's scaffold counts 20–25% *above* what the provider bills (ratio 0.75–0.80, likely deferred tools the snapshot lists but never sends), and replaying reasoning the provider strips over-counts ~9%. Those two errors offset the tokenizer's undercount. Fix them first, then refit |
 | 3.1 coverage | done | +2 matches from tool-results/file-history; history.jsonl dated by mtime |
 | 3.2 patterns | done | AWS, sk-proj, Slack etc. found where the old rules saw nothing |
 | 3.3 PEM in JSONL | done | latent; covered by a test |
