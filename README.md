@@ -63,7 +63,8 @@ $ ./claudit -here        # today, current project only
 ```
   YOUR CLAUDE CODE SPEND
   14 Aug → 12 Sep 2026 · all projects
-  111 sessions · 2,642 model calls · $168
+  111 sessions · 52 subagent runs · 2,642 model calls · $168
+  + $13 (8%) more in Claude Code's own ledger: calls no transcript records
 
   ALWAYS IN CONTEXT                            tokens      cost  share
     prepended to every single call
@@ -93,34 +94,56 @@ $ ./claudit -here        # today, current project only
   results — accounts for $38 of $168 (22%).
 ```
 
-It ends with three findings, each pinned to a number from your own sessions:
+Below the sections, a short paragraph says where the money concentrates (the
+priciest tenth of sessions, their size and model), then cost per PR and, where
+`/insights` has run, per session type. The report ends with ranked findings,
+each pinned to a number from your own sessions:
 
 ```
   WHAT TO CHANGE
   ────────────────────────────────────────────────────────────────────
 
-  1  38 of 48 MCP servers were never called                        $10
-     Their tool listings ride every call anyway. You used 10.
-     Idle: claude_ai_PagerDuty, claude_ai_Figma, +36 more
+  1  Opus 5 where Opus 5.5 is cheaper                              $91
+     1,653 calls · same tokens at list price: $214 → $123
+     Pinned? ANTHROPIC_DEFAULT_OPUS_MODEL: ask whoever sets it.
 
-  2  A call late in a session costs 1.9x an early one
-     per call:  1-10 $0.05   11-25 $0.05   26-50 $0.06   51+ $0.10
-     Every turn resends the ones before it. /clear between tasks.
+  2  Subagents ran on your main model: $31 of $42                  $23
+     ~$7.47 on Haiku · general-purpose $24, Explore $7.08
+     Set model: in the agent, or CLAUDE_CODE_SUBAGENT_MODEL.
 
-  3  Cache is healthy — 97% read, 3% rewritten                    good
+  3  Resuming idle sessions rewrote the cache 24 times             $20
+     5 after 5-60 min idle, 19 after over an hour
+     Start a new session instead of resuming, or /compact first.
+
+  GOING WELL
+  ✓  Cache is healthy — 97% read, 3% rewritten
+  ✓  Model switches are rare — 3 of 171 sessions
+
+  SETUP HEALTH
+  !  architecture-guidance failed to connect in 49 of 171 sessions
+  !  Stop hook averages 12.8 s per run, 2 timed out
 ```
 
-1. **Idle MCP servers.** A connected server's tool listing is prepended to every
-   call whether you use it or not. Servers listed but never called are pure
-   waste, priced by their share of the listing. Disconnecting one has no
-   downside, which is what makes this the first thing to act on.
-2. **Session depth.** Every turn resends the ones before it, so the same work
-   costs more the later it happens. The fix — `/clear` between unrelated tasks —
-   is free.
-3. **Cache health.** Cached input costs 0.1× to read but 1.25–2× to write. A
-   hook that emits a timestamp, or anything else that changes near the start of
-   the context, quietly turns every read into a rewrite. The healthy case is
-   boring, which is exactly why it is worth checking.
+Every candidate is priced, sorted by what it saves, and the top five print. A
+finding with no signal stays silent. The candidates:
+
+- **Older model where a newer one is cheaper** (Sonnet 4.6 → 5, Opus 5 → 5.5),
+  and **subagents on your main model** (priced on Haiku; forks are left out,
+  since they need the parent's model to reuse its cache). Both reprice the same
+  tokens at list price. A cheaper model can take more turns, so treat them as
+  upper bounds.
+- **Idle-session cache rewrites.** After a gap past the cache TTL, the next call
+  rewrites the whole context at write price.
+- **Listed but never used**: MCP servers, skills and agents whose listings ride
+  every call, priced by their share of the listing, with the plugins nothing was
+  used from.
+- **Max effort as a default**, **failed tool calls** (the calls spent reading
+  the error and retrying), and **cache misses the provider explains**
+  (`model_changed`, `tools_changed`, …) with their fix.
+
+GOING WELL and SETUP HEALTH print only lines over a threshold: healthy cache,
+rare model switches and `/clear` use; MCP servers failing to connect and hooks
+that fail or run slow.
 
 **How the split works.** Cost is attributed by _replay_, not by size. A token
 that enters the context early is re-billed on every later call, so an item's
@@ -148,24 +171,43 @@ $ ./claudit -scanner -here     # current project only
   project  ~/work/do-it-for-me
   session  e3b85756  2026-09-16
   ~/.claude/projects/-Users-you-work-do-it-for-me/e3b85756-….jsonl
-    Bearer Token (iss: https://sso.staging.example.com/) Bearer e…FCCQ (1217c)
-    JWT (iss: https://sso.staging.example.com/) eyJhbGci…FCCQ (1210c)
+    Bearer Token (iss: https://sso.staging.example.com/) Bearer e…FCCQ (1217c)  you typed/pasted it
+    JWT (iss: https://sso.staging.example.com/) eyJhbGci…FCCQ (1210c)  Read user-token
 
   Action: rotate any non-expired credentials listed above.
+  The matched files keep the secret until cleanupPeriodDays
+  (default 30). Delete them after rotating; claudit deletes nothing.
+
+  PERSONAL DATA — checksum-valid numbers, counts only
+  session  865fcb8e  IBAN 1 (local) · tax id 3 (local)
+
+  RAN WITHOUT ASKING — risky shell commands, no prompt
+  rm -rf          19× in auto        sessions 0c13893b, 2783298c +3
 ```
 
 Scanner output contains partial secrets (first 8 and last 4 characters of each
 match). Do not paste it into a chat, ticket, or PR.
 
-Two detection passes run over every `.jsonl` file:
+Each hit names how it got in (you typed or pasted it, `Read .env`, `Bash cat`,
+an MCP result, an edit backup) and whether it went out again in an MCP tool call
+or a WebFetch URL. Personal numbers (IBAN, German tax id, card) are counted per
+session, never shown. Risky shell commands (`rm -rf`, force push, `curl | sh`,
+`sudo`, …) run in a mode that does not prompt are listed by class; the command
+line itself is never printed.
+
+Three detection passes run over every file:
 
 1. **Known-format patterns** — regex matches for things with a recognisable
-   prefix regardless of context: JWTs, GitHub tokens, Bearer tokens, Stripe
-   keys, Anthropic/OpenAI keys, private key PEM blocks, DB connection URLs.
+   prefix regardless of context: JWTs, GitHub tokens, Bearer tokens, Stripe,
+   Anthropic, OpenAI, AWS, Slack, Google, GitLab, npm and Atlassian keys, private
+   key PEM blocks (also inside JSON strings), DB connection URLs.
 2. **Shannon entropy** — finds `"key": "value"` pairs where the key name looks
    secret-sounding (`password`, `secret`, `api_key`, `client_secret`, …) and
    the value has high entropy (>4.5 bits/char for base64, >4.8 for general
    text). Catches novel or internal secrets with no recognisable prefix.
+3. **Env-style assignments** — `FOO_TOKEN=value` lines in shell output and
+   `.env` contents, kept only when the value is high-entropy, mixes letters and
+   digits, and holds no placeholder word.
 
 Built-in false-positive suppression: Claude Code embeds its own API key as a
 JWT in every trace (`{"jti":"ApiKey:N"}`); these are detected and skipped
@@ -178,6 +220,10 @@ to any issuer you pass to `-scanner-ignore-iss`.
 $ claudit -json -days 0 | jq -r '
     sort_by(-.cost_usd) | .[:5][] | "\(.session)  $\(.cost_usd|floor)"'
 ```
+
+`-json` also carries `models` (model → cost), `unpriced`, `harness_cost_usd` and
+`harness_models` (Claude Code's own ledger), `parent_session` and `agent_type` on
+subagent runs, `branch` and `prs`.
 
 ```sh
 # what have the last 30 days cost?
