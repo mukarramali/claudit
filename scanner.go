@@ -585,7 +585,7 @@ func printScanReport(hits []credential, files []traceFile) {
 				ts = sg.start.Format("2006-01-02")
 			}
 			link := fileLink(pathOf[sg.session])
-			fmt.Printf("  session  %s  %s\n  %s\n", sg.session[:min(len(sg.session), 8)], ts, link)
+			fmt.Printf("  session  %s  %s\n  %s\n", shortID(sg.session), ts, link)
 
 			labels := make([]string, 0, len(sg.byLabel))
 			for l := range sg.byLabel {
@@ -736,14 +736,14 @@ var personalPatterns = []struct {
 	{"card", regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`), validCard},
 }
 
-// scanPersonal counts distinct checksum-valid personal numbers per session.
-// ponytail: counts by kind only; by source (local tool vs MCP server) needs the
-// per-record scan in docs/plan-next.md 3.4.
+// scanPersonal counts distinct checksum-valid personal numbers per session,
+// by kind and by where they came from: an MCP server's result, or local.
 func scanPersonal(files []traceFile) map[string]map[string]int {
 	out := map[string]map[string]int{}
 	seen := map[string]bool{}
 	for _, tf := range files {
 		text := string(tf.Data)
+		var values, kinds []string
 		for _, p := range personalPatterns {
 			for _, m := range p.re.FindAllString(text, -1) {
 				norm := strings.NewReplacer(" ", "", "-", "").Replace(m)
@@ -752,14 +752,33 @@ func scanPersonal(files []traceFile) map[string]map[string]int {
 					continue
 				}
 				seen[key] = true
-				if out[tf.Session] == nil {
-					out[tf.Session] = map[string]int{}
-				}
-				out[tf.Session][p.kind]++
+				values, kinds = append(values, m), append(kinds, p.kind)
 			}
+		}
+		if len(values) == 0 {
+			continue
+		}
+		prov := provenance(tf, values)
+		if out[tf.Session] == nil {
+			out[tf.Session] = map[string]int{}
+		}
+		for i, v := range values {
+			from := "local"
+			if src := prov[v][0]; strings.HasPrefix(src, "MCP ") {
+				from = strings.TrimSuffix(src, " result")
+			}
+			out[tf.Session][kinds[i]+"\x00"+from]++
 		}
 	}
 	return out
+}
+
+// shortID shortens a session UUID to its first block; other names stay whole.
+func shortID(s string) string {
+	if len(s) == 36 && s[8] == '-' {
+		return s[:8]
+	}
+	return s
 }
 
 // personalLines renders the counts, one line per session.
@@ -768,9 +787,10 @@ func personalLines(counts map[string]map[string]int) []string {
 	for _, sess := range slices.Sorted(maps.Keys(counts)) {
 		var parts []string
 		for _, kind := range slices.Sorted(maps.Keys(counts[sess])) {
-			parts = append(parts, fmt.Sprintf("%s %d", kind, counts[sess][kind]))
+			k, from, _ := strings.Cut(kind, "\x00")
+			parts = append(parts, fmt.Sprintf("%s %d (%s)", k, counts[sess][kind], from))
 		}
-		out = append(out, fmt.Sprintf("  session  %s  %s", sess[:min(len(sess), 8)], strings.Join(parts, " · ")))
+		out = append(out, fmt.Sprintf("  session  %s  %s", shortID(sess), strings.Join(parts, " · ")))
 	}
 	return out
 }
@@ -825,7 +845,7 @@ func riskyRuns(files []traceFile) []string {
 						if sessions[k] == nil {
 							sessions[k] = map[string]bool{}
 						}
-						sessions[k][tf.Session[:min(8, len(tf.Session))]] = true
+						sessions[k][shortID(tf.Session)] = true
 						break
 					}
 				}

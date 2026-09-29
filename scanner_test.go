@@ -393,10 +393,10 @@ func TestPersonalCountsOnly(t *testing.T) {
 	iban := "GB82WEST" + "12345698765432"
 	blob := `{"content":"pay ` + iban + ` or ` + iban + ` and 4111` + `111111111111"}`
 	lines := personalLines(scanPersonal([]traceFile{{Session: "sess1234abcd", Data: []byte(blob)}}))
-	if len(lines) != 1 || !strings.Contains(lines[0], "IBAN 1") || strings.Contains(lines[0], "card") {
+	if len(lines) != 1 || !strings.Contains(lines[0], "IBAN 1 (local)") || strings.Contains(lines[0], "card") {
 		t.Fatalf("lines = %q, want one distinct IBAN and the public test card skipped", lines)
 	}
-	if strings.ContainsAny(strings.TrimPrefix(lines[0], "  session  sess1234"), "23456789") {
+	if strings.ContainsAny(strings.TrimPrefix(lines[0], "  session  sess1234abcd"), "23456789") {
 		t.Errorf("digits reached the output: %q", lines[0])
 	}
 }
