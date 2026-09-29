@@ -449,3 +449,94 @@ func TestIdleListings(t *testing.T) {
 		t.Errorf("idleListings = %+v %v, want 2 of 3 idle at $12, plugin p unused", f, ok)
 	}
 }
+
+func TestPRParsing(t *testing.T) {
+	const tr = `
+{"type":"pr-link","prNumber":3252,"prRepository":"org/repo","gitBranch":"feature/main"}
+{"type":"user","gitBranch":"feature/main","message":{"role":"user","content":"hi"}}
+{"type":"assistant","message":{"id":"m1","model":"test","role":"assistant","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":1,"output_tokens":1}}}
+`
+	old := countTokens
+	countTokens = func(s string) int { return len(strings.Fields(s)) }
+	t.Cleanup(func() { countTokens = old })
+
+	tr0 := parseClaude([]byte(tr), "test")[0]
+	if !slices.Equal(tr0.PRs, []string{"org/repo#3252"}) {
+		t.Errorf("PRs = %v, want [org/repo#3252]", tr0.PRs)
+	}
+	if tr0.Branch != "feature/main" {
+		t.Errorf("Branch = %q, want feature/main", tr0.Branch)
+	}
+}
+
+func TestPRCosts(t *testing.T) {
+	// Session with two PRs should split cost equally between them
+	// Session with one PR should contribute its full cost
+	sess1 := Trajectory{
+		ID:  "s1",
+		PRs: []string{"org/repo#1", "org/repo#2"},
+		Calls: []Call{
+			{Model: "claude-sonnet-5", Provider: Usage{Input: 1000000, Output: 0}},
+		},
+	}
+	// Second session with one of the same PRs
+	sess2 := Trajectory{
+		ID:  "s2",
+		PRs: []string{"org/repo#1"},
+		Calls: []Call{
+			{Model: "claude-sonnet-5", Provider: Usage{Input: 1000000, Output: 0}},
+		},
+	}
+
+	line := prCosts([]Trajectory{sess1, sess2})
+	// sess1: $2 split into $1 each for PRs 1 and 2
+	// sess2: $2 for PR 1
+	// PR#1 total: $1 + $2 = $3
+	// PR#2 total: $1
+	// median should be ($1 + $3) / 2 = $2, max should be $3
+
+	if !strings.Contains(line, "2 PRs") {
+		t.Errorf("line %q missing PR count", line)
+	}
+	if !strings.Contains(line, "median") {
+		t.Errorf("line %q missing median", line)
+	}
+	if !strings.Contains(line, "priciest") {
+		t.Errorf("line %q missing priciest", line)
+	}
+
+	// No result when fewer than 2 PRs
+	noResult := prCosts([]Trajectory{{ID: "s1", PRs: []string{"org/repo#1"}, Calls: []Call{{Model: "claude-sonnet-5", Provider: Usage{Input: 1000000}}}}})
+	if noResult != "" {
+		t.Errorf("prCosts with 1 PR returned %q, want empty", noResult)
+	}
+}
+
+func TestWorkDriven(t *testing.T) {
+	// Two calls with attributionPlugin "p1", one with attributionSkill "solo" (no plugin),
+	// one with no attribution. Each sonnet call is $2 (1M input at $2/M).
+	const tr = `
+{"type":"assistant","attributionPlugin":"p1","message":{"id":"p1","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1000000,"output_tokens":0}}}
+{"type":"assistant","attributionPlugin":"p1","message":{"id":"p2","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1000000,"output_tokens":0}}}
+{"type":"assistant","attributionSkill":"solo","message":{"id":"s1","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1000000,"output_tokens":0}}}
+{"type":"assistant","message":{"id":"none","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1000000,"output_tokens":0}}}
+`
+	trajs := parseClaude([]byte(tr), "test")
+	gs := workDriven(trajs)
+	if len(gs) != 2 {
+		t.Fatalf("workDriven returned %d groups, want 2 (p1 and skill solo)", len(gs))
+	}
+	by := map[string]*group{}
+	for _, g := range gs {
+		by[g.Name] = g
+	}
+	if p1 := by["p1"]; p1 == nil || p1.Cost < 3.99 || p1.Cost > 4.01 || p1.N != 2 {
+		t.Errorf("p1 group = %+v, want Cost ~$4 N 2", p1)
+	}
+	if solo := by["skill solo"]; solo == nil || solo.Cost < 1.99 || solo.Cost > 2.01 || solo.N != 1 {
+		t.Errorf("skill solo group = %+v, want Cost ~$2 N 1", solo)
+	}
+	if unattributed := by[""]; unattributed != nil {
+		t.Errorf("workDriven included unattributed call, want to skip it")
+	}
+}

@@ -221,6 +221,8 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 	section("WHAT CLAUDE PRODUCED", "  generated once, then replayed", by[outKind], grand)
 	section("WHAT YOU TYPED", "", by[promptKind], grand)
 
+	section("WORK DRIVEN BY PLUGINS AND SKILLS", "  calls a plugin or skill caused, at their full cost", workDriven(inWindow(all, since)), grand)
+
 	yours := 0.0
 	for _, g := range into {
 		if g.Kind == setup || strings.HasPrefix(g.Name, "MCP ") {
@@ -234,6 +236,9 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 	}
 
 	concentration(inWindow(all, since), since)
+	if line := prCosts(inWindow(all, since)); line != "" {
+		fmt.Printf("\n  Per PR: %s\n", line)
+	}
 
 	whatToChange(all, since, into)
 
@@ -1063,4 +1068,53 @@ func idleListings(all []Trajectory, into map[string]*group) (finding, bool) {
 		Save:     total,
 		Detail:   detail,
 	}, true
+}
+
+// prCosts is unit economics per PR: a session's cost, subagent runs
+// included, split across the PRs it linked.
+func prCosts(all []Trajectory) string {
+	prs, cost := map[string][]string{}, map[string]float64{}
+	for _, t := range all {
+		id := cmp.Or(t.Parent, t.ID)
+		cost[id] += sum(t).CostUSD
+		if t.Parent == "" {
+			prs[id] = t.PRs
+		}
+	}
+	perPR := map[string]float64{}
+	for id, ps := range prs {
+		for _, pr := range ps {
+			perPR[pr] += cost[id] / float64(len(ps)) // ponytail: equal split; weight by call timing if anyone asks
+		}
+	}
+	if len(perPR) < 2 {
+		return ""
+	}
+	top := slices.SortedFunc(maps.Keys(perPR), func(a, b string) int { return cmp.Compare(perPR[b], perPR[a]) })
+	costs := slices.Sorted(maps.Values(perPR))
+	median := (costs[(len(costs)-1)/2] + costs[len(costs)/2]) / 2
+	return fmt.Sprintf("%d PRs · median %s · priciest %s %s", len(perPR), money(median), clip(top[0], 30), money(perPR[top[0]]))
+}
+
+// workDriven is Claude Code's own answer to who drove each call: the plugin
+// or skill named on the record, at the call's full cost.
+func workDriven(all []Trajectory) []*group {
+	by := map[string]*group{}
+	for _, t := range all {
+		for _, c := range t.Calls {
+			key := cmp.Or(c.Plugin, pluginOf(c.Skill))
+			if key == "" && c.Skill != "" {
+				key = "skill " + c.Skill
+			}
+			if key == "" {
+				continue
+			}
+			if by[key] == nil {
+				by[key] = &group{Kind: "work", Name: key}
+			}
+			by[key].Cost += c.bill().total()
+			by[key].N++
+		}
+	}
+	return slices.Collect(maps.Values(by))
 }

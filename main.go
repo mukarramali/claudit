@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -60,6 +61,7 @@ type Call struct {
 	Model, Effort    string
 	At               time.Time
 	AfterError       string // label of the tool whose failed result this call reacted to
+	Plugin, Skill    string // what Claude Code says drove this call
 	Miss             string // why the provider missed the cache, when it said
 	Missed           int    // input tokens that miss rewrote
 	AfterCompact     bool
@@ -99,7 +101,9 @@ type Trajectory struct {
 	Skills, Agents map[string]int      // skill / agent type -> tokens its listing line adds
 	Invoked        map[string]bool     // skills and agent types actually used
 	Hooks          map[string]*hookStats
-	Commands       map[string]int     // slash command name -> times run
+	Commands       map[string]int // slash command name -> times run
+	PRs            []string       // repo#number of the PRs the session linked
+	Branch         string
 	Ledger         float64            // Claude Code's own running cost for the session
 	LedgerModels   map[string]float64 // model -> its cost in that ledger
 }
@@ -369,6 +373,11 @@ type record struct {
 	IsMeta           bool            `json:"isMeta"`
 	IsCompactSummary bool            `json:"isCompactSummary"`
 	Effort           string          `json:"effort"`
+	AttrPlugin       string          `json:"attributionPlugin"`
+	AttrSkill        string          `json:"attributionSkill"`
+	PRNumber         int             `json:"prNumber"`
+	PRRepository     string          `json:"prRepository"`
+	GitBranch        string          `json:"gitBranch"`
 	Attachment       json.RawMessage `json:"attachment"`
 	HookContext      json.RawMessage `json:"hookAdditionalContext"`
 	TotalCostUSD     float64         `json:"totalCostUSD"` // cost-state
@@ -600,10 +609,17 @@ func (t *Trajectory) apply(s *state, r record) {
 	if t.CWD == "" && r.CWD != "" {
 		t.CWD = r.CWD
 	}
+	if t.Branch == "" {
+		t.Branch = r.GitBranch
+	}
 	if t.Start.IsZero() && r.Timestamp != "" {
 		t.Start, _ = time.Parse(time.RFC3339, r.Timestamp)
 	}
 	switch r.Type {
+	case "pr-link":
+		if pr := fmt.Sprintf("%s#%d", r.PRRepository, r.PRNumber); r.PRNumber > 0 && !slices.Contains(t.PRs, pr) {
+			t.PRs = append(t.PRs, pr)
+		}
 	case "cost-state":
 		// The ledger total only grows within a session, so the last one wins.
 		t.Ledger, t.LedgerModels = r.TotalCostUSD, map[string]float64{}
@@ -710,6 +726,7 @@ func (t *Trajectory) apply(s *state, r record) {
 		if m := r.Message.Diag.Miss; m.Type != "" {
 			c.Miss, c.Missed = m.Type, m.Missed // on any record of the message, not only the first
 		}
+		c.Plugin, c.Skill = cmp.Or(c.Plugin, r.AttrPlugin), cmp.Or(c.Skill, r.AttrSkill)
 		var bs []block
 		if json.Unmarshal(r.Message.Content, &bs) != nil {
 			return
@@ -893,11 +910,14 @@ type totals struct {
 	Unpriced           map[string]int     `json:"unpriced,omitempty"` // model -> calls not in cost_usd
 	HarnessCostUSD     float64            `json:"harness_cost_usd,omitempty"`
 	HarnessModels      map[string]float64 `json:"harness_models,omitempty"`
+	Branch             string             `json:"branch,omitempty"`
+	PRs                []string           `json:"prs,omitempty"`
 }
 
 func sum(t Trajectory) totals {
 	o := totals{Session: t.ID, ParentSession: t.Parent, AgentType: t.Agent, Model: t.Model, Calls: len(t.Calls),
-		Models: map[string]float64{}, Unpriced: map[string]int{}, HarnessCostUSD: t.Ledger, HarnessModels: t.LedgerModels}
+		Models: map[string]float64{}, Unpriced: map[string]int{}, HarnessCostUSD: t.Ledger, HarnessModels: t.LedgerModels,
+		Branch: t.Branch, PRs: t.PRs}
 	for _, c := range t.Calls {
 		o.P += c.P
 		o.T += c.T
