@@ -246,3 +246,50 @@ func TestModelFindings(t *testing.T) {
 		t.Errorf("inheritedSubagents = %+v %v, want 100%% inherited saving $4, fork excluded", f, ok)
 	}
 }
+
+func TestIdleRebuilds(t *testing.T) {
+	const epsilon = 0.0001
+	t1 := time.Date(2025, 1, 1, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(2 * time.Hour)
+
+	// Two calls 2 h apart with CacheMake > 20k should trigger one rebuild.
+	u1 := Usage{CacheMake: 100000}
+	u1.CacheTTL.M5 = 100000
+	u2 := Usage{CacheMake: 100000}
+	u2.CacheTTL.M5 = 100000
+
+	f, ok := idleRebuilds([]Trajectory{
+		{
+			Calls: []Call{
+				{At: t1, Model: "claude-sonnet-5", Provider: u1},
+				{At: t2, Model: "claude-sonnet-5", Provider: u2},
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("expected finding for 2h gap")
+	}
+	// For sonnet-5: In=2, Read=0.1; so premium = 100000 * (2/1e6) * (1.25 - 0.1) = 0.23
+	want := 100000.0 * (2.0 / 1e6) * (1.25 - 0.1)
+	if f.Save < want-epsilon || f.Save > want+epsilon {
+		t.Errorf("Save = %.4f, want %.4f", f.Save, want)
+	}
+
+	// Two calls 30 s apart should not trigger.
+	u3 := Usage{CacheMake: 100000}
+	u3.CacheTTL.M5 = 100000
+	u4 := Usage{CacheMake: 100000}
+	u4.CacheTTL.M5 = 100000
+
+	f2, ok2 := idleRebuilds([]Trajectory{
+		{
+			Calls: []Call{
+				{At: t1, Model: "claude-sonnet-5", Provider: u3},
+				{At: t1.Add(30 * time.Second), Model: "claude-sonnet-5", Provider: u4},
+			},
+		},
+	})
+	if ok2 {
+		t.Errorf("expected no finding for 30s gap, got %+v", f2)
+	}
+}

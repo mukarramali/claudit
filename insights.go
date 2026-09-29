@@ -496,6 +496,9 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 	} else if g != "" {
 		good = append(good, g)
 	}
+	if f, ok := idleRebuilds(all); ok {
+		fs = append(fs, f)
+	}
 
 	// ponytail: stable sort keeps insertion order among amount-less findings.
 	sort.SliceStable(fs, func(i, j int) bool { return fs[i].Save > fs[j].Save })
@@ -617,4 +620,62 @@ func inheritedSubagents(all []Trajectory) (finding, bool, string) {
 			"Set model: in the agent, or CLAUDE_CODE_SUBAGENT_MODEL.",
 		},
 	}, true, ""
+}
+
+// idleRebuilds flags cache rewrites after gaps longer than the cache TTL.
+// After a gap > 5 min, the next call re-sends context at write price (1.25-2x)
+// instead of read price (0.1x), costing extra tokens unnecessarily.
+func idleRebuilds(all []Trajectory) (finding, bool) {
+	var short, long int
+	var shortPrem, longPrem float64
+	const gapShort = 5 * time.Minute
+	const gapLong = 1 * time.Hour
+
+	for _, t := range all {
+		for i := 1; i < len(t.Calls); i++ {
+			c := &t.Calls[i]
+			prev := &t.Calls[i-1]
+			if c.At.IsZero() || prev.At.IsZero() || c.Provider.CacheMake <= 20000 {
+				continue
+			}
+			gap := c.At.Sub(prev.At)
+			if gap <= gapShort {
+				continue
+			}
+			r, ok := rateOf(c.Model)
+			if !ok {
+				continue
+			}
+			in := r.In / 1e6
+			m5, h1 := c.Provider.cacheWrites()
+			prem := float64(m5)*in*(1.25-r.Read) + float64(h1)*in*(2-r.Read)
+			if gap <= gapLong {
+				short++
+				shortPrem += prem
+			} else {
+				long++
+				longPrem += prem
+			}
+		}
+	}
+
+	total := shortPrem + longPrem
+	if short+long == 0 || total < 0.01 {
+		return finding{}, false
+	}
+
+	detail := []string{
+		fmt.Sprintf("%d after 5-60 min idle, %d after over an hour", short, long),
+	}
+	if shortPrem > longPrem {
+		detail = append(detail, "CLAUDE_CODE_PROMPT_CACHE_TTL=1h keeps the cache warm for an hour.")
+	} else {
+		detail = append(detail, "Start a new session instead of resuming, or /compact first.")
+	}
+
+	return finding{
+		Headline: fmt.Sprintf("Resuming idle sessions rewrote the cache %d times", short+long),
+		Save:     total,
+		Detail:   detail,
+	}, true
 }
