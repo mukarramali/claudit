@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,11 +67,13 @@ func memoryFiles(cwd string) []string {
 // context, and adds what the transcript cannot account for as its own entry.
 func attribute(t Trajectory, into map[string]*group) {
 	o := sum(t)
-	b := priceOf(o.Model, o)
-	inCost := b.FreshIn + b.CacheWrite + b.CacheRead
-	outRate := 0.0
-	if p, ok := prices[o.Model]; ok {
-		outRate = p[1] / 1e6
+	inCost := billOf(t).in()
+	outRate := func(call int) float64 {
+		if call < 0 || call >= len(t.Calls) {
+			return 0
+		}
+		p, _ := rateOf(t.Calls[call].Model)
+		return p.Out / 1e6
 	}
 
 	items := t.Items
@@ -115,7 +118,7 @@ func attribute(t Trajectory, into map[string]*group) {
 			cost = float64(it.Tok*t.rounds(it)) / float64(total) * inCost
 		}
 		if it.Out {
-			cost += float64(it.Tok) * outRate // generating it, on top of replaying it
+			cost += float64(it.Tok) * outRate(it.Call) // generating it, on top of replaying it
 		}
 		put(it.Kind, it.Name, it.Tok, 1, cost)
 	}
@@ -181,6 +184,7 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 	}
 	into := map[string]*group{}
 	calls, sessions, subs, grand := 0, 0, 0, 0.0
+	unpriced := map[string]int{}
 	oldest, newest := time.Time{}, time.Time{}
 	for _, t := range all {
 		if !t.Start.IsZero() && t.Start.Before(since) {
@@ -193,7 +197,11 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 		} else {
 			sessions++
 		}
-		grand += sum(t).CostUSD
+		o := sum(t)
+		grand += o.CostUSD
+		for m, n := range o.Unpriced {
+			unpriced[m] += n
+		}
 		if !t.Start.IsZero() {
 			if oldest.IsZero() || t.Start.Before(oldest) {
 				oldest = t.Start
@@ -232,6 +240,16 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 	}
 	fmt.Printf("\n%s\n  YOUR CLAUDE CODE SPEND\n  %s\n  %s sessions%s · %s model calls · %s\n%s\n",
 		rule, label, comma(sessions), runs, comma(calls), money(grand), rule)
+
+	if len(unpriced) > 0 {
+		n, names := 0, []string{}
+		for m, c := range unpriced {
+			n += c
+			names = append(names, cmp.Or(m, "(no model)"))
+		}
+		sort.Strings(names)
+		fmt.Printf("  %s call%s on unpriced models (%s) — not in the total\n", comma(n), plural(n), strings.Join(names, ", "))
+	}
 
 	section("ALWAYS IN CONTEXT", "  prepended to every single call", by[scaffoldKind], grand)
 	section("YOUR CUSTOMISATIONS", "  hooks, CLAUDE.md, listings, skill bodies", by[setup], grand)
@@ -339,7 +357,7 @@ func depthCurve(all []Trajectory, since time.Time) ([]string, float64) {
 				if i+1 <= bs[j].max {
 					bs[j].sum += c.Provider.InputTotal()
 					bs[j].calls++
-					bs[j].cost += priceOf(t.Model, sum(Trajectory{Model: t.Model, Calls: []Call{c}})).total()
+					bs[j].cost += c.bill().total()
 					break
 				}
 			}

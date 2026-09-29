@@ -138,3 +138,22 @@ func TestSubagentFiles(t *testing.T) {
 		t.Errorf("session file -> %q %q %v, want s1 proj false", s, p, sub)
 	}
 }
+
+func TestPerCallPricing(t *testing.T) {
+	const tr = `
+{"type":"assistant","message":{"id":"a","model":"claude-opus-5","content":[],"usage":{"input_tokens":1000000,"output_tokens":0}}}
+{"type":"assistant","message":{"id":"b","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1000000,"output_tokens":0}}}
+{"type":"assistant","message":{"id":"c","model":"claude-haiku-4-5-20251001","content":[],"usage":{"input_tokens":1000000,"output_tokens":0}}}
+{"type":"assistant","message":{"id":"d","model":"<synthetic>","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}
+`
+	o := sum(parseClaude([]byte(tr), "x")[0])
+	if o.CostUSD != 5+2+1 {
+		t.Errorf("cost = %v, want 8 (opus 5 + sonnet 2 + haiku 1)", o.CostUSD)
+	}
+	if o.Model != "claude-opus-5" {
+		t.Errorf("model = %q, want the one with most spend", o.Model)
+	}
+	if r, _ := rateOf("claude-opus-5-5[1m]"); r.In != 4 {
+		t.Errorf("opus-5-5 priced at %v, want 4 (longest prefix, suffix stripped)", r.In)
+	}
+}

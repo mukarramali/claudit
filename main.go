@@ -56,6 +56,7 @@ type Call struct {
 	P, T, A, X       int
 	MText, MTool, R  int
 	Provider         Usage
+	Model            string
 	AfterCompact     bool
 	RedactedThinking int // thinking blocks whose content the provider withheld
 }
@@ -482,14 +483,14 @@ func (t *Trajectory) apply(s *state, r record) {
 		// the identical usage object. Group by id or both counts inflate.
 		if r.Message.ID != s.curID {
 			s.curID = r.Message.ID
-			c := Call{P: s.P, T: s.T, A: s.A, AfterCompact: s.compacted}
+			c := Call{P: s.P, T: s.T, A: s.A, AfterCompact: s.compacted, Model: r.Message.Model}
 			if r.Message.Usage != nil {
 				c.Provider = *r.Message.Usage
 			}
 			t.Calls = append(t.Calls, c)
 			s.P, s.T, s.A, s.compacted = 0, 0, 0, false
-			if r.Message.Model != "" {
-				t.Model = r.Message.Model
+			if r.Message.Model != "" && r.Message.Model != "<synthetic>" {
+				t.Model = r.Message.Model // latest real model; pricing is per call
 			}
 		}
 		c := &t.Calls[len(t.Calls)-1]
@@ -548,19 +549,37 @@ func (t *Trajectory) replay() {
 
 // ---------- pricing ----------
 
-// Per-million-token list prices. Cache writes cost 1.25x input at the 5-minute
-// TTL and 2x at one hour; cache reads cost 0.1x.
-var prices = map[string][2]float64{
-	"claude-fable-5-1":  {10, 50},
-	"claude-fable-5":    {10, 50},
-	"claude-mythos-5-1": {10, 50},
-	"claude-opus-5":     {5, 25},
-	"claude-opus-4-8":   {5, 25},
-	"claude-opus-4-7":   {5, 25},
-	"claude-opus-4-6":   {5, 25},
-	"claude-sonnet-5":   {2, 10},
-	"claude-sonnet-4-6": {3, 15},
-	"claude-haiku-4-5":  {1, 5},
+// Per-million-token list prices, and what a cache read costs as a share of
+// input. Cache writes cost 1.25x input at the 5-minute TTL and 2x at one hour.
+type rate struct{ In, Out, Read float64 }
+
+var prices = map[string]rate{
+	"claude-fable-5-1":  {10, 50, 0.025},
+	"claude-mythos-5-1": {10, 50, 0.025},
+	"claude-fable-5":    {10, 50, 0.1},
+	"claude-opus-5-5":   {4, 20, 0.05},
+	"claude-opus-5":     {5, 25, 0.1},
+	"claude-opus-4-8":   {5, 25, 0.1},
+	"claude-opus-4-7":   {5, 25, 0.1},
+	"claude-opus-4-6":   {5, 25, 0.1},
+	"claude-sonnet-5":   {2, 10, 0.1},
+	"claude-sonnet-4-6": {3, 15, 0.1},
+	"claude-haiku-4-5":  {1, 5, 0.1},
+}
+
+// rateOf finds a model's price. Ids carry date or context suffixes
+// (claude-haiku-4-5-20251001, claude-opus-5[1m]), so the longest table key that
+// prefixes the id wins; shortest-first would price opus-5-5 as opus-5.
+func rateOf(model string) (rate, bool) {
+	model, _, _ = strings.Cut(model, "[")
+	best := ""
+	for k := range prices {
+		if strings.HasPrefix(model, k) && len(k) > len(best) {
+			best = k
+		}
+	}
+	r, ok := prices[best]
+	return r, ok
 }
 
 type bill struct {
@@ -569,62 +588,92 @@ type bill struct {
 }
 
 func (b bill) total() float64 { return b.FreshIn + b.CacheWrite + b.CacheRead + b.Out }
+func (b bill) in() float64    { return b.FreshIn + b.CacheWrite + b.CacheRead }
 
-func priceOf(model string, o totals) bill {
-	p, ok := prices[model]
+// cacheWrites splits a call's cache creation by TTL.
+func (u Usage) cacheWrites() (m5, h1 int) {
+	m5, h1 = u.CacheTTL.M5, u.CacheTTL.H1
+	if m5+h1 == 0 {
+		m5 = u.CacheMake // older transcripts omit the TTL split
+	}
+	return m5, h1
+}
+
+// priceAt prices one call's usage at a model's list rate.
+func priceAt(model string, u Usage) bill {
+	p, ok := rateOf(model)
 	if !ok {
 		return bill{}
 	}
-	in, out := p[0]/1e6, p[1]/1e6
-	read := in * 0.1
-	if strings.HasSuffix(model, "-5-1") && !strings.Contains(model, "opus") {
-		read = in * 0.025 // Fable/Mythos 5.1 read at a quarter of the usual rate
-	}
+	in, out := p.In/1e6, p.Out/1e6
+	m5, h1 := u.cacheWrites()
 	return bill{
-		FreshIn:    float64(o.ProviderInput) * in,
-		CacheWrite: float64(o.CacheWrite5m)*in*1.25 + float64(o.CacheWrite1h)*in*2,
-		CacheRead:  float64(o.ProviderCacheRead) * read,
-		Out:        float64(o.ProviderOutput) * out,
+		FreshIn:    float64(u.Input) * in,
+		CacheWrite: float64(m5)*in*1.25 + float64(h1)*in*2,
+		CacheRead:  float64(u.CacheRead) * in * p.Read,
+		Out:        float64(u.Output) * out,
 		Priced:     true,
 	}
+}
+
+func (c Call) bill() bill { return priceAt(c.Model, c.Provider) }
+
+func (b *bill) plus(o bill) {
+	b.FreshIn += o.FreshIn
+	b.CacheWrite += o.CacheWrite
+	b.CacheRead += o.CacheRead
+	b.Out += o.Out
+	b.Priced = b.Priced || o.Priced
+}
+
+// billOf is a trajectory's bill, every call at its own model's rate.
+func billOf(t Trajectory) bill {
+	var b bill
+	for _, c := range t.Calls {
+		b.plus(c.bill())
+	}
+	return b
 }
 
 // ---------- totals ----------
 
 type totals struct {
-	Session            string  `json:"session"`
-	ParentSession      string  `json:"parent_session,omitempty"`
-	AgentType          string  `json:"agent_type,omitempty"`
-	Model              string  `json:"model"`
-	Calls              int     `json:"inference_calls"`
-	Turns              int     `json:"user_turns"`
-	P                  int     `json:"prompt"`
-	T                  int     `json:"tool_output"`
-	A                  int     `json:"attachment"`
-	X                  int     `json:"replay"`
-	MText              int     `json:"model_output_text"`
-	MTool              int     `json:"model_output_tool_calls"`
-	R                  int     `json:"reasoning"`
-	Chatting           int     `json:"chatting"`
-	AgentVisible       int     `json:"agent_visible"`
-	TrajectoryInput    int     `json:"trajectory_input"`
-	TrajectoryOutput   int     `json:"trajectory_output"`
-	TrajectoryTotal    int     `json:"trajectory_total"`
-	ProviderInput      int     `json:"provider_input"`
-	ProviderCacheMake  int     `json:"provider_cache_creation"`
-	CacheWrite5m       int     `json:"provider_cache_creation_5m"`
-	CacheWrite1h       int     `json:"provider_cache_creation_1h"`
-	ProviderCacheRead  int     `json:"provider_cache_read"`
-	ProviderInputTotal int     `json:"provider_input_total"`
-	ProviderOutput     int     `json:"provider_output"`
-	ProviderThinking   int     `json:"provider_thinking"`
-	RedactedThinking   int     `json:"redacted_thinking_blocks"`
-	CallsWithoutUsage  int     `json:"calls_without_usage"`
-	CostUSD            float64 `json:"cost_usd"`
+	Session            string             `json:"session"`
+	ParentSession      string             `json:"parent_session,omitempty"`
+	AgentType          string             `json:"agent_type,omitempty"`
+	Model              string             `json:"model"`
+	Calls              int                `json:"inference_calls"`
+	Turns              int                `json:"user_turns"`
+	P                  int                `json:"prompt"`
+	T                  int                `json:"tool_output"`
+	A                  int                `json:"attachment"`
+	X                  int                `json:"replay"`
+	MText              int                `json:"model_output_text"`
+	MTool              int                `json:"model_output_tool_calls"`
+	R                  int                `json:"reasoning"`
+	Chatting           int                `json:"chatting"`
+	AgentVisible       int                `json:"agent_visible"`
+	TrajectoryInput    int                `json:"trajectory_input"`
+	TrajectoryOutput   int                `json:"trajectory_output"`
+	TrajectoryTotal    int                `json:"trajectory_total"`
+	ProviderInput      int                `json:"provider_input"`
+	ProviderCacheMake  int                `json:"provider_cache_creation"`
+	CacheWrite5m       int                `json:"provider_cache_creation_5m"`
+	CacheWrite1h       int                `json:"provider_cache_creation_1h"`
+	ProviderCacheRead  int                `json:"provider_cache_read"`
+	ProviderInputTotal int                `json:"provider_input_total"`
+	ProviderOutput     int                `json:"provider_output"`
+	ProviderThinking   int                `json:"provider_thinking"`
+	RedactedThinking   int                `json:"redacted_thinking_blocks"`
+	CallsWithoutUsage  int                `json:"calls_without_usage"`
+	CostUSD            float64            `json:"cost_usd"`
+	Models             map[string]float64 `json:"models"`             // model -> cost
+	Unpriced           map[string]int     `json:"unpriced,omitempty"` // model -> calls not in cost_usd
 }
 
 func sum(t Trajectory) totals {
-	o := totals{Session: t.ID, ParentSession: t.Parent, AgentType: t.Agent, Model: t.Model, Calls: len(t.Calls)}
+	o := totals{Session: t.ID, ParentSession: t.Parent, AgentType: t.Agent, Model: t.Model, Calls: len(t.Calls),
+		Models: map[string]float64{}, Unpriced: map[string]int{}}
 	for _, c := range t.Calls {
 		o.P += c.P
 		o.T += c.T
@@ -642,14 +691,24 @@ func sum(t Trajectory) totals {
 		if c.P > 0 {
 			o.Turns++
 		}
-		m5, h1 := c.Provider.CacheTTL.M5, c.Provider.CacheTTL.H1
-		if m5+h1 == 0 {
-			m5 = c.Provider.CacheMake // older transcripts omit the TTL split
-		}
+		m5, h1 := c.Provider.cacheWrites()
 		o.CacheWrite5m += m5
 		o.CacheWrite1h += h1
 		if c.Provider.Empty() {
 			o.CallsWithoutUsage++
+		}
+		b := c.bill()
+		o.CostUSD += b.total()
+		if !b.Priced && !c.Provider.Empty() && c.Model != "<synthetic>" {
+			o.Unpriced[c.Model]++
+		} else if b.Priced {
+			o.Models[c.Model] += b.total()
+		}
+	}
+	best := 0.0
+	for m, v := range o.Models {
+		if v > best {
+			o.Model, best = m, v // the model that did the most spend
 		}
 	}
 	o.Chatting = o.P + o.MText
@@ -658,7 +717,6 @@ func sum(t Trajectory) totals {
 	o.TrajectoryOutput = o.MText + o.MTool + o.R
 	o.TrajectoryTotal = o.TrajectoryInput + o.TrajectoryOutput
 	o.ProviderInputTotal = o.ProviderInput + o.ProviderCacheMake + o.ProviderCacheRead
-	o.CostUSD = priceOf(o.Model, o).total()
 	return o
 }
 
