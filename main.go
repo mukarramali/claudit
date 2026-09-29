@@ -60,6 +60,8 @@ type Call struct {
 	Model, Effort    string
 	At               time.Time
 	AfterError       string // label of the tool whose failed result this call reacted to
+	Miss             string // why the provider missed the cache, when it said
+	Missed           int    // input tokens that miss rewrote
 	AfterCompact     bool
 	RedactedThinking int // thinking blocks whose content the provider withheld
 }
@@ -297,6 +299,12 @@ type record struct {
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
 		Usage   *Usage          `json:"usage"`
+		Diag    struct {
+			Miss struct {
+				Type   string `json:"type"`
+				Missed int    `json:"cache_missed_input_tokens"`
+			} `json:"cache_miss_reason"`
+		} `json:"diagnostics"`
 	} `json:"message"`
 }
 
@@ -600,6 +608,9 @@ func (t *Trajectory) apply(s *state, r record) {
 			}
 		}
 		c := &t.Calls[len(t.Calls)-1]
+		if m := r.Message.Diag.Miss; m.Type != "" {
+			c.Miss, c.Missed = m.Type, m.Missed // on any record of the message, not only the first
+		}
 		var bs []block
 		if json.Unmarshal(r.Message.Content, &bs) != nil {
 			return

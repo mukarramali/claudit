@@ -466,11 +466,16 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 		writes += o.ProviderCacheMake
 		reads += o.ProviderCacheRead
 	}
+	misses, known := cacheMisses(all)
+	if misses.Save >= 0.05 {
+		fs = append(fs, misses)
+	}
 	if w := writes + reads; w > 0 {
 		share := 100 * float64(writes) / float64(w)
 		switch {
 		case share < 15:
 			good = append(good, fmt.Sprintf("Cache is healthy — %.0f%% read, %.0f%% rewritten", 100-share, share))
+		case known: // the provider said why; that finding replaces the guess
 		case share < 40:
 			fs = append(fs, finding{fmt.Sprintf("Cache misses more than it should — %.0f%% rewritten", share), 0, "check", []string{
 				"Something near the start of your context changes between calls.",
@@ -841,4 +846,47 @@ func habits(all []Trajectory) []string {
 		out = append(out, fmt.Sprintf("/clear used %d times — context stays short", clears))
 	}
 	return out
+}
+
+// missFix is what to do about each cache-miss reason the provider reports.
+var missFix = map[string]string{
+	"model_changed":    "new session instead of /model",
+	"tools_changed":    "an MCP server connected late or flapped",
+	"system_changed":   "CLAUDE.md or a hook changed mid-session",
+	"messages_changed": "earlier messages edited or rewound",
+}
+
+// cacheMisses prices the misses the provider explained: the missed tokens
+// were written at cache-write price instead of read. Older transcripts carry
+// no reason; known reports whether any call did.
+func cacheMisses(all []Trajectory) (finding, bool) {
+	cost, count := map[string]float64{}, map[string]int{}
+	known := false
+	for _, t := range all {
+		for _, c := range t.Calls {
+			known = known || c.Miss != ""
+			r, ok := rateOf(c.Model)
+			if c.Missed == 0 || !ok {
+				continue
+			}
+			write := 1.25
+			if c.Provider.CacheTTL.H1 > 0 {
+				write = 2
+			}
+			cost[c.Miss] += float64(c.Missed) * r.In / 1e6 * (write - r.Read)
+			count[c.Miss]++
+		}
+	}
+	top := slices.SortedFunc(maps.Keys(cost), func(a, b string) int { return cmp.Compare(cost[b], cost[a]) })
+	f := finding{}
+	n := 0
+	for i, k := range top {
+		f.Save += cost[k]
+		n += count[k]
+		if i < 2 {
+			f.Detail = append(f.Detail, fmt.Sprintf("%s ×%d %s: %s", k, count[k], money(cost[k]), cmp.Or(missFix[k], "see diagnostics")))
+		}
+	}
+	f.Headline = fmt.Sprintf("The provider says why the cache missed %d times", n)
+	return f, known
 }

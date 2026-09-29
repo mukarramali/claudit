@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -382,5 +383,16 @@ func TestHabits(t *testing.T) {
 	}
 	if got := habits(all[:3]); len(got) != 0 {
 		t.Errorf("habits on 3 sessions = %q, want none (below thresholds)", got)
+	}
+}
+
+func TestCacheMisses(t *testing.T) {
+	const tr = `
+{"type":"assistant","message":{"id":"a","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1}}}
+{"type":"assistant","message":{"id":"a","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1},"diagnostics":{"cache_miss_reason":{"type":"model_changed","cache_missed_input_tokens":1000000}}}}
+`
+	f, known := cacheMisses(parseClaude([]byte(tr), "s"))
+	if !known || math.Abs(f.Save-2*(1.25-0.1)) > 1e-9 || !strings.Contains(f.Detail[0], "model_changed") {
+		t.Errorf("cacheMisses = %+v %v, want model_changed priced at 1M × $2 × (1.25-0.1)", f, known)
 	}
 }
