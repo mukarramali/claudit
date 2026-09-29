@@ -82,8 +82,8 @@ type Trajectory struct {
 	Calls          []Call
 	Items          []item
 	Scaffold       *scaffold
-	Listed         map[string]int  // MCP server -> tokens it adds to the tool listing
-	UsedMCP        map[string]bool // MCP server -> actually called at least once
+	Listed         map[string]*listing // MCP server -> what it adds to the tool listing
+	UsedMCP        map[string]bool     // MCP server -> actually called at least once
 }
 
 // scaffold is the system prompt and tool schemas prepended to every call. The
@@ -94,30 +94,62 @@ type scaffold struct {
 	Tools  map[string]int
 }
 
+// listing is what one MCP server adds to every call: its deferred-tool lines
+// plus its instruction block. Tools are kept to recognise one connector listed
+// under two names.
+type listing struct {
+	Tok   int
+	Tools map[string]bool
+}
+
+func (t *Trajectory) listed(srv string) *listing {
+	if t.Listed == nil {
+		t.Listed = map[string]*listing{}
+	}
+	l := t.Listed[srv]
+	if l == nil {
+		l = &listing{Tools: map[string]bool{}}
+		t.Listed[srv] = l
+	}
+	return l
+}
+
 // noteListing records what each MCP server contributes to the deferred-tool
-// listing, so servers that are never called can be priced separately.
+// listing and the server instructions, so servers that are never called can be
+// priced separately.
 func (t *Trajectory) noteListing(raw json.RawMessage) {
 	var a struct {
-		Type  string   `json:"type"`
-		Lines []string `json:"addedLines"`
-		Names []string `json:"addedNames"`
+		Type   string   `json:"type"`
+		Lines  []string `json:"addedLines"`
+		Names  []string `json:"addedNames"`
+		Blocks []string `json:"addedBlocks"`
 	}
-	if json.Unmarshal(raw, &a) != nil || a.Type != "deferred_tools_delta" {
+	if json.Unmarshal(raw, &a) != nil {
 		return
 	}
-	for i, name := range a.Names {
-		srv := mcpServer(name)
-		if srv == "" {
-			continue
+	switch a.Type {
+	case "deferred_tools_delta":
+		for i, name := range a.Names {
+			srv := mcpServer(name)
+			if srv == "" {
+				continue
+			}
+			text := name
+			if i < len(a.Lines) {
+				text = a.Lines[i]
+			}
+			l := t.listed(srv)
+			l.Tok += countTokens(text)
+			l.Tools[name[len("mcp__"+srv+"__"):]] = true
 		}
-		text := name
-		if i < len(a.Lines) {
-			text = a.Lines[i]
+	case "mcp_instructions_delta":
+		// Instructions name the server as displayed ("claude.ai Notion"); tool
+		// names spell it claude_ai_Notion.
+		for i, name := range a.Names {
+			if i < len(a.Blocks) {
+				t.listed(strings.NewReplacer(".", "_", " ", "_").Replace(name)).Tok += countTokens(a.Blocks[i])
+			}
 		}
-		if t.Listed == nil {
-			t.Listed = map[string]int{}
-		}
-		t.Listed[srv] += countTokens(text)
 	}
 }
 

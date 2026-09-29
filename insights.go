@@ -3,6 +3,9 @@ package main
 import (
 	"cmp"
 	"fmt"
+	"maps"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -256,20 +259,61 @@ func clip(s string, n int) string {
 	return s
 }
 
+var connectorID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-`)
+
+// aliasOf maps a claude.ai connector recorded under its UUID to the named
+// server listing the same tools, or labels it by its first tools. Tool sets
+// drift between sessions, so 80% overlap counts as the same connector.
+func aliasOf(srv string, tools map[string]map[string]bool) string {
+	if !connectorID.MatchString(srv) || len(tools[srv]) == 0 {
+		return srv
+	}
+	best, bestShare := "", 0.0
+	for name, ts := range tools {
+		if connectorID.MatchString(name) {
+			continue
+		}
+		n := 0
+		for tl := range tools[srv] {
+			if ts[tl] {
+				n++
+			}
+		}
+		if share := float64(n) / float64(len(tools[srv])); share > bestShare {
+			best, bestShare = name, share
+		}
+	}
+	if bestShare >= 0.8 {
+		return best
+	}
+	names := slices.Sorted(maps.Keys(tools[srv]))
+	return fmt.Sprintf("connector %s (%s, …)", srv[:8], strings.Join(names[:min(2, len(names))], ", "))
+}
+
 // idleMCP prices the MCP servers that were listed on every call but never once
 // called. Their share of the listing cost is proportional to what their entries
 // add to it.
 func idleMCP(all []Trajectory, since time.Time, listingCost float64) (idle []group, total float64, listed, used int) {
+	tools := map[string]map[string]bool{}
+	for _, t := range all {
+		for srv, l := range t.Listed {
+			if tools[srv] == nil {
+				tools[srv] = map[string]bool{}
+			}
+			maps.Copy(tools[srv], l.Tools)
+		}
+	}
 	tokens, everUsed := map[string]int{}, map[string]bool{}
 	for _, t := range all {
 		if !t.Start.IsZero() && t.Start.Before(since) {
 			continue
 		}
-		for srv, n := range t.Listed {
-			tokens[srv] = max(tokens[srv], n) // the listing is the same each session, not cumulative
+		for srv, l := range t.Listed {
+			srv = aliasOf(srv, tools)
+			tokens[srv] = max(tokens[srv], l.Tok) // the listing is the same each session, not cumulative
 		}
 		for srv := range t.UsedMCP {
-			everUsed[srv] = true
+			everUsed[aliasOf(srv, tools)] = true
 		}
 	}
 	listedTok := 0
@@ -339,13 +383,21 @@ func depthCurve(all []Trajectory, since time.Time) ([]string, float64) {
 	return out, mult
 }
 
-func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
-	listingCost := 0.0
+// mcpListingCost is what MCP servers add to every call. Built-in tool schemas
+// ride along whether or not any server is connected, so they are not in it.
+func mcpListingCost(into map[string]*group) float64 {
+	c := 0.0
 	for _, g := range into {
-		if strings.HasPrefix(g.Name, "tool listings") || strings.HasSuffix(g.Name, "tool schemas") {
-			listingCost += g.Cost
+		if g.Name == "tool listings (MCP)" || g.Name == "MCP server instructions" ||
+			strings.HasPrefix(g.Name, "MCP ") && strings.HasSuffix(g.Name, " tool schemas") {
+			c += g.Cost
 		}
 	}
+	return c
+}
+
+func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
+	listingCost := mcpListingCost(into)
 
 	fmt.Printf("\n%s\n  WHAT TO CHANGE\n%s\n", rule, rule)
 	n := 0

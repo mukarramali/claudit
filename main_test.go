@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 // One fixture exercising the three things that are easy to get wrong: Claude
@@ -181,5 +182,35 @@ func TestPerCallPricing(t *testing.T) {
 	}
 	if r, _ := rateOf("claude-opus-5-5[1m]"); r.In != 4 {
 		t.Errorf("opus-5-5 priced at %v, want 4 (longest prefix, suffix stripped)", r.In)
+	}
+}
+
+func TestIdleMCP(t *testing.T) {
+	into := map[string]*group{
+		"a": {Name: "built-in tool schemas", Cost: 50},
+		"b": {Name: "tool listings (MCP)", Cost: 8},
+		"c": {Name: "MCP server instructions", Cost: 2},
+	}
+	if c := mcpListingCost(into); c != 10 {
+		t.Fatalf("listing cost = %v, want 10 (built-in schemas excluded)", c)
+	}
+	tools := func(ns ...string) map[string]bool {
+		m := map[string]bool{}
+		for _, n := range ns {
+			m[n] = true
+		}
+		return m
+	}
+	trs := []Trajectory{
+		{Listed: map[string]*listing{"claude_ai_Notion": {Tok: 30, Tools: tools("search", "fetch")}, "idle": {Tok: 10, Tools: tools("x")}},
+			UsedMCP: map[string]bool{"claude_ai_Notion": true}},
+		{Listed: map[string]*listing{"7dedc1d6-06bc-4a1e": {Tok: 30, Tools: tools("search", "fetch")}}},
+	}
+	idle, total, listed, used := idleMCP(trs, time.Time{}, 10)
+	if listed != 2 || used != 1 || len(idle) != 1 || idle[0].Name != "idle" {
+		t.Fatalf("listed %d used %d idle %v; want the UUID alias merged into claude_ai_Notion", listed, used, idle)
+	}
+	if total != 2.5 { // 10 of 40 listed tokens
+		t.Errorf("idle cost = %v, want 2.5", total)
 	}
 }
