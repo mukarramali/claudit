@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -53,6 +56,8 @@ type credential struct {
 	Label   string
 	Preview string // first 8 chars … last 4 chars
 	Len     int
+	Source  string // how it got in: "you typed/pasted it", "Read .env", …
+	Dest    string // where it went out again, if it did
 }
 
 // traceFile carries the raw bytes plus enough metadata for the scanner.
@@ -305,6 +310,7 @@ func scanTraces(files []traceFile, ignoreISS []string) []credential {
 	type dedupKey struct{ session, label, preview string }
 	seen := map[dedupKey]bool{}
 
+	var values []string // raw value of each hit in this file, for provenance
 	add := func(hits *[]credential, tf traceFile, label, value string) {
 		preview := redact(value)
 		k := dedupKey{tf.Session, label, preview}
@@ -312,6 +318,7 @@ func scanTraces(files []traceFile, ignoreISS []string) []credential {
 			return
 		}
 		seen[k] = true
+		values = append(values, value)
 		*hits = append(*hits, credential{
 			Project: tf.Project,
 			Session: tf.Session,
@@ -325,6 +332,8 @@ func scanTraces(files []traceFile, ignoreISS []string) []credential {
 	var hits []credential
 	for _, tf := range files {
 		text := string(tf.Data)
+		first := len(hits)
+		values = values[:0]
 
 		// Pass 1: known-format patterns.
 		for _, cp := range credPatterns {
@@ -359,8 +368,118 @@ func scanTraces(files []traceFile, ignoreISS []string) []credential {
 		for _, e := range scanEnvStyle(text) {
 			add(&hits, tf, e.label, e.value)
 		}
+
+		if len(values) > 0 {
+			prov := provenance(tf, values)
+			for i, v := range values {
+				hits[first+i].Source, hits[first+i].Dest = prov[v][0], prov[v][1]
+			}
+		}
 	}
 	return hits
+}
+
+// provenance says, for each value, how it first entered the file and whether
+// it later went out in a tool call to an MCP server or a WebFetch URL. It
+// reads records only for files that had a hit: one JSON decode per line, no
+// tokenising.
+func provenance(tf traceFile, values []string) map[string][2]string {
+	out := map[string][2]string{}
+	switch base := filepath.Base(filepath.Dir(tf.Path)); {
+	case base == "tool-results":
+		return fill(out, values, "large tool output")
+	case base == "paste-cache":
+		return fill(out, values, "you pasted it")
+	case filepath.Base(filepath.Dir(filepath.Dir(tf.Path))) == "file-history":
+		return fill(out, values, "edit backup")
+	}
+	tools := map[string]block{}
+	for _, line := range bytes.Split(tf.Data, []byte("\n")) {
+		var r record
+		if json.Unmarshal(line, &r) != nil {
+			continue
+		}
+		var bs []block
+		json.Unmarshal(r.Message.Content, &bs)
+		for _, b := range bs {
+			if b.Type == "tool_use" {
+				tools[b.ID] = b
+			}
+		}
+		for _, v := range values {
+			if !bytes.Contains(line, []byte(v)) {
+				continue
+			}
+			p := out[v]
+			if p[0] == "" {
+				p[0] = sourceOf(r, bs, v, tools)
+			}
+			for _, b := range bs {
+				if p[1] == "" && b.Type == "tool_use" && bytes.Contains(b.Input, []byte(v)) {
+					if srv := mcpServer(b.Name); srv != "" {
+						p[1] = "sent to MCP " + srv
+					} else if b.Name == "WebFetch" {
+						p[1] = "sent in a WebFetch URL"
+					}
+				}
+			}
+			out[v] = p
+		}
+	}
+	return out
+}
+
+func fill(out map[string][2]string, values []string, source string) map[string][2]string {
+	for _, v := range values {
+		out[v] = [2]string{source, ""}
+	}
+	return out
+}
+
+// sourceOf names what put a value into the record it first appears in. A
+// command line or file path can carry secrets of its own, so only the tool,
+// the file's extension or the command's first word are named.
+func sourceOf(r record, bs []block, v string, tools map[string]block) string {
+	switch r.Type {
+	case "attachment":
+		return "attachment"
+	case "assistant":
+		return "Claude wrote it"
+	case "user":
+		if len(bs) == 0 {
+			if r.IsMeta {
+				return "attachment"
+			}
+			return "you typed/pasted it"
+		}
+		for _, b := range bs {
+			if b.Type == "tool_result" && bytes.Contains(b.Content, []byte(v)) {
+				return toolSource(tools[b.ToolUseID])
+			}
+		}
+		return "you typed/pasted it"
+	}
+	return "transcript"
+}
+
+func toolSource(b block) string {
+	var in struct {
+		Path    string `json:"file_path"`
+		Command string `json:"command"`
+	}
+	json.Unmarshal(b.Input, &in)
+	switch {
+	case mcpServer(b.Name) != "":
+		return "MCP " + mcpServer(b.Name) + " result"
+	case b.Name == "Read" && in.Path != "":
+		return "Read " + cmp.Or(filepath.Ext(in.Path), filepath.Base(in.Path))
+	case b.Name == "Bash":
+		if w := strings.Fields(in.Command); len(w) > 0 && !strings.ContainsAny(w[0], "=$`'\"") {
+			return "Bash " + filepath.Base(w[0])
+		}
+		return "Bash"
+	}
+	return cmp.Or(b.Name, "a tool") + " result"
 }
 
 // ---------- output ----------
@@ -479,18 +598,32 @@ func printScanReport(hits []credential, files []traceFile) {
 				if len(creds) > 3 {
 					creds = creds[:3]
 				}
-				previews := make([]string, len(creds))
 				for i, c := range creds {
-					previews[i] = fmt.Sprintf("%s (%dc)", c.Preview, c.Len)
+					if i > 0 {
+						label = ""
+					}
+					from := printableOnly(c.Source)
+					if c.Dest != "" {
+						from += " → " + printableOnly(c.Dest)
+					}
+					fmt.Printf("    %-30s %s (%dc)  %s\n", label, c.Preview, c.Len, from)
 				}
-				fmt.Printf("    %-30s %s\n", label, strings.Join(previews, "  "))
 			}
 		}
 	}
 
 	fmt.Println()
 	fmt.Println(rule)
-	fmt.Printf("\n  Action: rotate any non-expired credentials listed above.\n\n")
+	fmt.Printf("\n  Action: rotate any non-expired credentials listed above.\n")
+	for _, h := range hits {
+		if strings.HasPrefix(h.Source, "Read .env") {
+			fmt.Printf("  A .env file was read: add \"Read(**/.env)\" to permissions.deny;\n" +
+				"  it also blocks cat, head and tail on that path.\n")
+			break
+		}
+	}
+	fmt.Printf("  The matched files keep the secret until cleanupPeriodDays\n" +
+		"  (default 30). Delete them after rotating; claudit deletes nothing.\n\n")
 }
 
 func plural(n int) string {

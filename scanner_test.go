@@ -400,3 +400,16 @@ func TestPersonalCountsOnly(t *testing.T) {
 		t.Errorf("digits reached the output: %q", lines[0])
 	}
 }
+
+func TestProvenance(t *testing.T) {
+	key := "sk-" + "ant-" + strings.Repeat("Q7vK2mX9pL", 5)
+	data := strings.Join([]string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/repo/.env"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":"ANTHROPIC=` + key + `"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"m1","name":"mcp__claude_ai_Slack__send","input":{"text":"` + key + `"}}]}}`,
+	}, "\n")
+	hits := scanTraces([]traceFile{{Session: "sess1234abcd", Path: "/p/s.jsonl", Data: []byte(data)}}, nil)
+	if len(hits) != 1 || hits[0].Source != "Read .env" || hits[0].Dest != "sent to MCP claude_ai_Slack" {
+		t.Fatalf("hits = %+v, want source Read .env and dest MCP claude_ai_Slack", hits)
+	}
+}
