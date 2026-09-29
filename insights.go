@@ -657,7 +657,7 @@ func idleRebuilds(all []Trajectory) (finding, bool) {
 		for i := 1; i < len(t.Calls); i++ {
 			c := &t.Calls[i]
 			prev := &t.Calls[i-1]
-			if c.At.IsZero() || prev.At.IsZero() || c.Provider.CacheMake <= 20000 {
+			if m5, h1 := c.Provider.cacheWrites(); c.At.IsZero() || prev.At.IsZero() || m5+h1 <= 20000 {
 				continue
 			}
 			gap := c.At.Sub(prev.At)
@@ -895,9 +895,10 @@ func cacheMisses(all []Trajectory) (finding, bool) {
 			if c.Missed == 0 || !ok {
 				continue
 			}
+			// Missed tokens were written at this call's 5m/1h mix.
 			write := 1.25
-			if c.Provider.CacheTTL.H1 > 0 {
-				write = 2
+			if m5, h1 := c.Provider.cacheWrites(); m5+h1 > 0 {
+				write = (1.25*float64(m5) + 2*float64(h1)) / float64(m5+h1)
 			}
 			cost[c.Miss] += float64(c.Missed) * r.In / 1e6 * (write - r.Read)
 			count[c.Miss]++
