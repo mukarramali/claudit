@@ -230,3 +230,19 @@ func TestLedger(t *testing.T) {
 		t.Errorf("ledgerGap = %v, %v; want 2.5, 0 (subagent counted against its parent's ledger)", l, gap)
 	}
 }
+
+func TestModelFindings(t *testing.T) {
+	mtok := Usage{Input: 1000000}
+	call := func(m string) Call { return Call{Model: m, Provider: mtok} }
+	fs := newerModels([]Trajectory{{Calls: []Call{call("claude-sonnet-4-6"), call("claude-sonnet-5")}}})
+	if len(fs) != 1 || fs[0].Save != 1 { // $3 -> $2
+		t.Errorf("newerModels = %+v, want one finding saving $1 (Sonnet 5 has no successor)", fs)
+	}
+	parent := Trajectory{ID: "s", Calls: []Call{call("claude-opus-5")}}
+	child := Trajectory{ID: "s · general-purpose", Parent: "s", Agent: "general-purpose", Calls: []Call{call("claude-opus-5")}}
+	fork := Trajectory{ID: "s · fork", Parent: "s", Agent: "fork", Calls: []Call{call("claude-opus-5")}}
+	f, ok, _ := inheritedSubagents([]Trajectory{parent, child, fork})
+	if !ok || f.Save != 4 || !strings.Contains(f.Headline, "$5.00 of $5.00") { // $5 on Opus -> $1 on Haiku; fork excluded
+		t.Errorf("inheritedSubagents = %+v %v, want 100%% inherited saving $4, fork excluded", f, ok)
+	}
+}

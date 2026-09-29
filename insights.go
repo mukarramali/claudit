@@ -490,6 +490,13 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 		}
 	}
 
+	fs = append(fs, newerModels(all)...)
+	if f, ok, g := inheritedSubagents(all); ok {
+		fs = append(fs, f)
+	} else if g != "" {
+		good = append(good, g)
+	}
+
 	// ponytail: stable sort keeps insertion order among amount-less findings.
 	sort.SliceStable(fs, func(i, j int) bool { return fs[i].Save > fs[j].Save })
 	fmt.Printf("\n%s\n  WHAT TO CHANGE\n%s\n", rule, rule)
@@ -502,4 +509,112 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 			fmt.Printf("  ✓  %s\n", g)
 		}
 	}
+}
+
+// successor lists only pairs where the newer model is cheaper at list price.
+var successor = map[string]string{
+	"claude-sonnet-4-6": "claude-sonnet-5",
+	"claude-opus-5":     "claude-opus-5-5",
+	"claude-opus-4-8":   "claude-opus-5-5",
+	"claude-opus-4-7":   "claude-opus-5-5",
+	"claude-opus-4-6":   "claude-opus-5-5",
+}
+
+// pretty turns claude-sonnet-4-6 into Sonnet 4.6.
+func pretty(model string) string {
+	f := strings.Split(strings.TrimPrefix(modelKey(model), "claude-"), "-")
+	if len(f) == 0 || f[0] == "" {
+		return model
+	}
+	return strings.ToUpper(f[0][:1]) + f[0][1:] + " " + strings.Join(f[1:], ".")
+}
+
+// newerModels reprices calls on an older model at its cheaper successor.
+func newerModels(all []Trajectory) []finding {
+	type acc struct {
+		n        int
+		was, now float64
+	}
+	by := map[string]*acc{}
+	for _, t := range all {
+		for _, c := range t.Calls {
+			k := modelKey(c.Model)
+			next, ok := successor[k]
+			if !ok {
+				continue
+			}
+			if by[k] == nil {
+				by[k] = &acc{}
+			}
+			by[k].n++
+			by[k].was += c.bill().total()
+			by[k].now += priceAt(next, c.Provider).total()
+		}
+	}
+	var out []finding
+	for k, a := range by {
+		if a.was-a.now < 0.01 {
+			continue
+		}
+		family := strings.ToUpper(strings.Fields(pretty(k))[0])
+		out = append(out, finding{
+			Headline: fmt.Sprintf("%s where %s is cheaper", pretty(k), pretty(successor[k])),
+			Save:     a.was - a.now,
+			Detail: []string{
+				fmt.Sprintf("%s calls · same tokens at list price: %s → %s", comma(a.n), money(a.was), money(a.now)),
+				fmt.Sprintf("Pinned? ANTHROPIC_DEFAULT_%s_MODEL: ask whoever sets it.", family),
+			},
+		})
+	}
+	return out
+}
+
+// inheritedSubagents finds subagent runs that ran on their parent session's
+// model, which is the default when neither the agent nor the environment sets
+// one. Forks are left out: they must share the parent's model to reuse its
+// cache. With little inherited it returns a good line instead.
+func inheritedSubagents(all []Trajectory) (finding, bool, string) {
+	parent := map[string]string{}
+	for _, t := range all {
+		if t.Parent == "" {
+			parent[t.ID] = modelKey(sum(t).Model)
+		}
+	}
+	const cheap = "claude-haiku-4-5"
+	spend, inherited, onHaiku := 0.0, 0.0, 0.0
+	byAgent := map[string]float64{}
+	for _, t := range all {
+		if t.Parent == "" || t.Agent == "fork" {
+			continue
+		}
+		for _, c := range t.Calls {
+			cost := c.bill().total()
+			spend += cost
+			if pm := parent[t.Parent]; pm == "" || modelKey(c.Model) != pm {
+				continue
+			}
+			inherited += cost
+			byAgent[t.Agent] += cost
+			onHaiku += min(cost, priceAt(cheap, c.Provider).total())
+		}
+	}
+	if spend < 0.01 {
+		return finding{}, false, ""
+	}
+	if share := inherited / spend; share < 0.3 {
+		return finding{}, false, fmt.Sprintf("Subagents mostly on cheaper models — %.0f%% on your main model", 100*share)
+	}
+	top := slices.SortedFunc(maps.Keys(byAgent), func(a, b string) int { return cmp.Compare(byAgent[b], byAgent[a]) })
+	var names []string
+	for _, a := range top[:min(2, len(top))] {
+		names = append(names, fmt.Sprintf("%s %s", clip(a, 20), money(byAgent[a])))
+	}
+	return finding{
+		Headline: fmt.Sprintf("Subagents ran on your main model: %s of %s", money(inherited), money(spend)),
+		Save:     inherited - onHaiku,
+		Detail: []string{
+			fmt.Sprintf("~%s on Haiku · %s", money(onHaiku), strings.Join(names, ", ")),
+			"Set model: in the agent, or CLAUDE_CODE_SUBAGENT_MODEL.",
+		},
+	}, true, ""
 }

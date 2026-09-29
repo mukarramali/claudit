@@ -657,6 +657,12 @@ var prices = map[string]rate{
 // (claude-haiku-4-5-20251001, claude-opus-5[1m]), so the longest table key that
 // prefixes the id wins; shortest-first would price opus-5-5 as opus-5.
 func rateOf(model string) (rate, bool) {
+	r, ok := prices[modelKey(model)]
+	return r, ok
+}
+
+// modelKey is the price-table key for a model id, or "".
+func modelKey(model string) string {
 	model, _, _ = strings.Cut(model, "[")
 	best := ""
 	for k := range prices {
@@ -664,8 +670,7 @@ func rateOf(model string) (rate, bool) {
 			best = k
 		}
 	}
-	r, ok := prices[best]
-	return r, ok
+	return best
 }
 
 type bill struct {
