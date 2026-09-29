@@ -79,6 +79,12 @@ type item struct {
 	Out        bool
 }
 
+// hookStats is how one hook event's runs went across a session.
+type hookStats struct {
+	Runs, Failed, TimedOut int
+	Ms                     int // total run time
+}
+
 // Trajectory is one conversation: a sequence of inference calls.
 type Trajectory struct {
 	ID, Model, CWD string
@@ -89,9 +95,11 @@ type Trajectory struct {
 	Scaffold       *scaffold
 	Listed         map[string]*listing // MCP server -> what it adds to the tool listing
 	UsedMCP        map[string]bool     // MCP server -> actually called at least once
-	Commands       map[string]int      // slash command name -> times run
-	Ledger         float64             // Claude Code's own running cost for the session
-	LedgerModels   map[string]float64  // model -> its cost in that ledger
+	FailedMCP      map[string]bool     // MCP server -> failed to connect at least once
+	Hooks          map[string]*hookStats
+	Commands       map[string]int     // slash command name -> times run
+	Ledger         float64            // Claude Code's own running cost for the session
+	LedgerModels   map[string]float64 // model -> its cost in that ledger
 }
 
 // scaffold is the system prompt and tool schemas prepended to every call. The
@@ -157,6 +165,49 @@ func (t *Trajectory) noteListing(raw json.RawMessage) {
 			if i < len(a.Blocks) {
 				t.listed(strings.NewReplacer(".", "_", " ", "_").Replace(name)).Tok += countTokens(a.Blocks[i])
 			}
+		}
+	}
+}
+
+// noteHealth records setup defects: MCP servers that failed to connect, and
+// how each hook event's runs went. Error text and commands are not kept.
+func (t *Trajectory) noteHealth(raw json.RawMessage) {
+	var a struct {
+		Type             string `json:"type"`
+		FailedMcpServers []struct {
+			Name string `json:"name"`
+		} `json:"failedMcpServers"`
+		HookName  string `json:"hookName"`
+		HookEvent string `json:"hookEvent"`
+		Duration  int    `json:"durationMs"`
+		TimedOut  bool   `json:"timedOut"`
+		ExitCode  int    `json:"exitCode"`
+	}
+	if json.Unmarshal(raw, &a) != nil {
+		return
+	}
+	for _, s := range a.FailedMcpServers {
+		if t.FailedMCP == nil {
+			t.FailedMCP = map[string]bool{}
+		}
+		t.FailedMCP[s.Name] = true
+	}
+	hookName := cmp.Or(a.HookEvent, a.HookName)
+	if hookName != "" && (a.Type == "hook_success" || a.Type == "hook_non_blocking_error" || a.Type == "hook_cancelled") {
+		if t.Hooks == nil {
+			t.Hooks = map[string]*hookStats{}
+		}
+		if t.Hooks[hookName] == nil {
+			t.Hooks[hookName] = &hookStats{}
+		}
+		hs := t.Hooks[hookName]
+		hs.Runs++
+		hs.Ms += a.Duration
+		if a.Type != "hook_success" {
+			hs.Failed++
+		}
+		if a.TimedOut {
+			hs.TimedOut++
 		}
 	}
 }
@@ -553,6 +604,7 @@ func (t *Trajectory) apply(s *state, r record) {
 		s.A += n
 		t.add(setup, attachmentLabel(r.Attachment), n, false)
 		t.noteListing(r.Attachment)
+		t.noteHealth(r.Attachment)
 	case "system":
 		n := tokensIn(r.HookContext)
 		s.A += n

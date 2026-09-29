@@ -512,6 +512,12 @@ func whatToChange(all []Trajectory, since time.Time, into map[string]*group) {
 			fmt.Printf("  ✓  %s\n", g)
 		}
 	}
+	if lines := setupHealth(all); len(lines) > 0 {
+		fmt.Printf("\n  SETUP HEALTH\n")
+		for _, l := range lines {
+			fmt.Printf("  !  %s\n", l)
+		}
+	}
 }
 
 // successor lists only pairs where the newer model is cheaper at list price.
@@ -889,4 +895,66 @@ func cacheMisses(all []Trajectory) (finding, bool) {
 	}
 	f.Headline = fmt.Sprintf("The provider says why the cache missed %d times", n)
 	return f, known
+}
+
+// setupHealth reports setup defects that cost time rather than tokens: MCP
+// servers failing to connect in over 10% of sessions, hooks failing over 5%
+// of runs or averaging over 5 s. Worst first, at most five.
+func setupHealth(all []Trajectory) []string {
+	type line struct {
+		text  string
+		count int
+	}
+	var lines []line
+	add := func(n int, format string, a ...any) {
+		lines = append(lines, line{clip(fmt.Sprintf(format, a...), 63), n})
+	}
+
+	fails, sessions := map[string]int{}, 0
+	hooks := map[string]*hookStats{}
+	for _, t := range all {
+		for name, h := range t.Hooks {
+			if hooks[name] == nil {
+				hooks[name] = &hookStats{}
+			}
+			hooks[name].Runs += h.Runs
+			hooks[name].Failed += h.Failed
+			hooks[name].TimedOut += h.TimedOut
+			hooks[name].Ms += h.Ms
+		}
+		if t.Parent != "" || len(t.FailedMCP)+len(t.Listed) == 0 {
+			continue // a session that connects to MCP at all
+		}
+		sessions++
+		for srv := range t.FailedMCP {
+			fails[srv]++
+		}
+	}
+	for srv, n := range fails {
+		if n >= 2 && 10*n > sessions {
+			// plugin:x:x is how a plugin names its own server
+			if p := strings.Split(srv, ":"); len(p) == 3 && p[0] == "plugin" && p[1] == p[2] {
+				srv = p[1]
+			}
+			add(n, "%s failed to connect in %d of %d sessions", clip(srv, 30), n, sessions)
+		}
+	}
+	for name, h := range hooks {
+		if h.Failed >= 2 && 20*h.Failed > h.Runs {
+			add(h.Failed, "%s hook failed %d of %d runs", clip(name, 30), h.Failed, h.Runs)
+		}
+		if avg := float64(h.Ms) / float64(max(h.Runs, 1)) / 1000; avg > 5 {
+			timeouts := ""
+			if h.TimedOut > 0 {
+				timeouts = fmt.Sprintf(", %d timed out", h.TimedOut)
+			}
+			add(h.Runs, "%s hook averages %.1f s per run%s", clip(name, 25), avg, timeouts)
+		}
+	}
+	sort.Slice(lines, func(i, j int) bool { return lines[i].count > lines[j].count })
+	var out []string
+	for _, l := range lines[:min(5, len(lines))] {
+		out = append(out, l.text)
+	}
+	return out
 }

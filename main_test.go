@@ -396,3 +396,39 @@ func TestCacheMisses(t *testing.T) {
 		t.Errorf("cacheMisses = %+v %v, want model_changed priced at 1M × $2 × (1.25-0.1)", f, known)
 	}
 }
+
+func TestSetupHealth(t *testing.T) {
+	// Server failing in 2 of 3 sessions (>10%, >=2 failures) should print
+	t1 := Trajectory{ID: "s1", FailedMCP: map[string]bool{"plugin:arch:arch": true}}
+	t2 := Trajectory{ID: "s2", FailedMCP: map[string]bool{"plugin:arch:arch": true}}
+	t3 := Trajectory{ID: "s3", Listed: map[string]*listing{"other": {}}}
+	lines := setupHealth([]Trajectory{t1, t2, t3})
+	if !slices.ContainsFunc(lines, func(s string) bool {
+		return strings.Contains(s, "arch") && strings.Contains(s, "2") && strings.Contains(s, "3")
+	}) {
+		t.Errorf("setupHealth missing arch failure; got %v", lines)
+	}
+
+	// Server failing in 1 of 20 sessions (<10%) should not print
+	var t20 []Trajectory
+	t20 = append(t20, Trajectory{ID: "fail", FailedMCP: map[string]bool{"plugin:rare:rare": true}})
+	for i := 0; i < 19; i++ {
+		t20 = append(t20, Trajectory{ID: fmt.Sprintf("s%d", i)})
+	}
+	lines = setupHealth(t20)
+	if slices.ContainsFunc(lines, func(s string) bool { return strings.Contains(s, "rare") }) {
+		t.Errorf("setupHealth printed rare failure at 1/20; got %v", lines)
+	}
+
+	// Hook with 20 runs and 2 failures (10%, >=2) should print
+	lines = setupHealth([]Trajectory{{ID: "h1", Hooks: map[string]*hookStats{"Start": {Runs: 20, Failed: 2}}}})
+	if !slices.ContainsFunc(lines, func(s string) bool { return strings.Contains(s, "Start") && strings.Contains(s, "failed") }) {
+		t.Errorf("setupHealth missing hook failure; got %v", lines)
+	}
+
+	// Hook with 100 runs and 1 failure (1%, <5%) should not print
+	lines = setupHealth([]Trajectory{{ID: "h2", Hooks: map[string]*hookStats{"End": {Runs: 100, Failed: 1}}}})
+	if slices.ContainsFunc(lines, func(s string) bool { return strings.Contains(s, "End") && strings.Contains(s, "failed") }) {
+		t.Errorf("setupHealth printed 1/100 hook failure; got %v", lines)
+	}
+}
