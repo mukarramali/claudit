@@ -1135,6 +1135,7 @@ func main() {
 	days := flag.Int("days", 1, "how far back to look (0 = all time)")
 	scanFlag := flag.Bool("scanner", false, "scan traces for accidentally shared credentials")
 	ignoreISS := flag.String("scanner-ignore-iss", "", "comma-separated JWT issuers to suppress (e.g. https://sso.example.com)")
+	breakdown := flag.Bool("breakdown", false, "show tool results, Claude output, and user-typed sections")
 	flag.Parse()
 
 	var args []string
@@ -1285,5 +1286,5 @@ func main() {
 		return
 	}
 
-	insights(all, since, *days, scope)
+	insights(all, since, *days, scope, *breakdown)
 }

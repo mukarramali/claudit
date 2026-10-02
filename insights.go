@@ -140,7 +140,7 @@ func section(title, note string, gs []*group, grand float64) {
 	row("subtotal", 0, sub, grand)
 }
 
-func insights(all []Trajectory, since time.Time, days int, scope string) {
+func insights(all []Trajectory, since time.Time, days int, scope string, breakdown bool) {
 	if days <= 0 {
 		since = time.Time{} // -days 0 means everything
 	}
@@ -220,9 +220,11 @@ func insights(all []Trajectory, since time.Time, days int, scope string) {
 
 	section("ALWAYS IN CONTEXT", "  prepended to every single call", by[scaffoldKind], grand)
 	section("YOUR CUSTOMISATIONS", "  hooks, CLAUDE.md, listings, skill bodies", by[setup], grand)
-	section("TOOL RESULTS YOU READ BACK", "", by[toolKind], grand)
-	section("WHAT CLAUDE PRODUCED", "  generated once, then replayed", by[outKind], grand)
-	section("WHAT YOU TYPED", "", by[promptKind], grand)
+	if breakdown {
+		section("TOOL RESULTS YOU READ BACK", "", by[toolKind], grand)
+		section("WHAT CLAUDE PRODUCED", "  generated once, then replayed", by[outKind], grand)
+		section("WHAT YOU TYPED", "", by[promptKind], grand)
+	}
 
 	pluginTable(all, since, into)
 
