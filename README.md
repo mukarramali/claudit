@@ -37,15 +37,17 @@ this is what makes the binary ~7 MB larger.
 ## Usage
 
 ```
-claudit [-days N] [-here] [-json] [-scanner] [path...]
+claudit [-days N] [-here] [-json] [-breakdown] [-scanner] [path...]
 
-  path      a .jsonl transcript, or a ~/.claude/projects/<slug> directory
-            default: every project; -here for the current one only
-  -days     how far back to look (default 1 = today, 0 for everything);
-            applies to every mode, including -json and -scanner
-  -here     only the project in the current directory
-  -json     machine-readable totals per session
-  -scanner  scan traces for accidentally shared credentials
+  path       a .jsonl transcript, or a ~/.claude/projects/<slug> directory
+             default: every project; -here for the current one only
+  -days      how far back to look (default 1 = today, 0 for everything);
+             applies to every mode, including -json and -scanner
+  -here      only the project in the current directory
+  -json      machine-readable totals per session
+  -breakdown add the TOOL RESULTS YOU READ BACK section (per-tool token/cost
+             breakdown of tool results returned to the model)
+  -scanner   scan traces for accidentally shared credentials
 
   -scanner-ignore-iss   comma-separated JWT issuers to suppress, for the
                         SSO tokens you already know about
@@ -62,37 +64,49 @@ $ ./claudit -here        # today, current project only
 
 ```
   YOUR CLAUDE CODE SPEND
-  14 Aug → 12 Sep 2026 · all projects
-  111 sessions · 52 subagent runs · 2,642 model calls · $168
-  + $13 (8%) more in Claude Code's own ledger: calls no transcript records
+  last 3 days · all projects
+  28 sessions · 19 subagent runs · 727 model calls · $29
+  + $3.43 (11%) more in Claude Code's own ledger: calls no transcript records
 
   ALWAYS IN CONTEXT                            tokens      cost  share
     prepended to every single call
-  system prompt + tools (no snapshot)       3,039,593       $48  28.6%
-  built-in tool schemas                       764,850       $10   6.0%
-  system prompt (Claude Code)                 116,159     $1.21   0.7%
-  subtotal                                                  $65  38.8%
+  built-in tool schemas                     1,000,468     $8.90  30.4%
+  unaccounted                                  79,738     $1.50   5.1%
+  system prompt (Claude Code)                 175,757     $1.46   5.0%
+  system prompt + tools (no snapshot)         123,853     $0.94   3.2%
+  subtotal                                                  $13  43.8%
 
   YOUR CUSTOMISATIONS                          tokens      cost  share
     hooks, CLAUDE.md, listings, skill bodies
-  tool listings (MCP)                         758,247       $10   6.0%
-  skill listing                               280,840     $4.52   2.7%
-  subagent listing                            217,558     $2.76   1.6%
-  hook SessionStart:startup                    94,234     $1.29   0.8%
-  skill update-config (loaded)                 89,496     $1.20   0.7%
-  …and 43 more                                366,911     $4.93   2.9%
-  subtotal                                                  $29  17.0%
+  tool listings (MCP)                         271,618     $2.42   8.3%
+  skill listing                                87,395     $0.84   2.9%
+  subagent listing                             66,310     $0.60   2.0%
+  CLAUDE.md (project)                          59,825     $0.46   1.6%
+  hook SessionStart:startup                    20,447     $0.18   0.6%
+  session bookkeeping                          15,818     $0.14   0.5%
+  MCP server instructions                      14,208     $0.12   0.4%
+  session context                              11,257     $0.09   0.3%
+  …and 25 more                                 68,682     $0.50   1.7%
+  subtotal                                                $5.34  18.3%
 
-  TOOL RESULTS YOU READ BACK                   tokens      cost  share
-  Read                                        424,739     $8.22   4.9%
-  Bash                                        380,616     $5.49   3.3%
-  MCP claude_ai_Snowflake                     220,022     $3.90   2.3%
-  …and 33 more                                 69,031     $0.92   0.5%
-  subtotal                                                  $24  14.3%
+  PLUGINS AND SKILLS                      listing tax  work driven
+    on every call, used or not · calls it drove
+  testing-principles                            $0.12        $1.20
+  skill code-review                             $0.01        $0.47
+  dev-toolkit · 0 of 21 used                    $0.38            -
+  architecture-guidance · 0 of 5 used           $0.27            -
+  figma · 0 of 14 used                          $0.20            -
+  ava-analytics · 0 of 14 used                  $0.08            -
+  skill claude-code-guide                       $0.07            -
+  skill Explore                                 $0.01            -
+  …and 29 more                                  $0.34            -
 
   Your own configuration — customisations, MCP servers and their
-  results — accounts for $38 of $168 (22%).
+  results — accounts for $6.40 of $29 (22%).
 ```
+
+Add `-breakdown` to also see `TOOL RESULTS YOU READ BACK` — a per-tool
+breakdown of tokens returned by Read, Bash, MCP calls, and so on.
 
 Below the sections, a short paragraph says where the money concentrates (the
 priciest tenth of sessions, their size and model), then cost per PR and, where
@@ -118,6 +132,7 @@ each pinned to a number from your own sessions:
   GOING WELL
   ✓  Cache is healthy — 97% read, 3% rewritten
   ✓  Model switches are rare — 3 of 171 sessions
+  ✓  /clear used 12 times — context stays short
 
   SETUP HEALTH
   !  architecture-guidance failed to connect in 49 of 171 sessions
@@ -135,8 +150,9 @@ finding with no signal stays silent. The candidates:
 - **Idle-session cache rewrites.** After a gap past the cache TTL, the next call
   rewrites the whole context at write price.
 - **Listed but never used**: MCP servers, skills and agents whose listings ride
-  every call, priced by their share of the listing, with the plugins nothing was
-  used from.
+  every call, priced by their share of the listing. The PLUGINS AND SKILLS
+  section shows the per-plugin listing tax alongside the work each actually
+  drove, so you can see which plugins earn their keep.
 - **Max effort as a default**, **failed tool calls** (the calls spent reading
   the error and retrying), and **cache misses the provider explains**
   (`model_changed`, `tools_changed`, …) with their fix.
