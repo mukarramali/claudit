@@ -1,0 +1,10 @@
+name: Merge Gatekeeper
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  merge-gatekeeper:
+    uses: taxfix/actions/.github/workflows/merge-gatekeeper.yml@main
+    secrets: inherit

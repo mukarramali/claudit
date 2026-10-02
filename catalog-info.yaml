@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: claudit
+  description: ""
+spec:
+  type: service
+  lifecycle: experimental
+  domain: assisted-tax-filing
+  system: difm
+  owner: assisted-orchard

@@ -1,0 +1,57 @@
+# INSTRUCTIONS:
+#
+# - The "software-catalog-validation" job (at the bottom) is the minimal CI check required for all repositories.
+#   It validates your software catalog metadata.
+#
+# - If you use one of the commented jobs below (uncomment and configure as needed),
+#   you do NOT need to keep the standalone "software-catalog-validation" job,
+#   as those jobs already include this check internally.
+#
+# - Use the "npm-package--common-targets.yml" workflow if your repository is a Node.js/npm package.
+#   This workflow handles build, test, and publish steps for npm packages.
+#
+# - Use the "container-based-application--common-targets.yml" workflow if your repository builds a containerized application (e.g., Docker image).
+#   This workflow handles build, test, and publish steps for container-based apps.
+#
+# - Only keep the "software-catalog-validation" job if your repository does not fit the above categories and you want to ensure catalog compliance.
+#
+# For more information, check Taxfix's Github Actions repository at https://github.com/taxfix/actions.
+# -----------------------------
+name: Taxfix CI/CD Workflow [claudit]
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+jobs:
+
+  # ---------------------------------------------
+  # Uncomment ONE of the following jobs as needed:
+  #
+  # 1. For npm packages:
+  # taxfix-ci-cd:
+  #   uses: 'taxfix/actions/.github/workflows/npm-package--common-targets.yml@main'
+  #   with:
+  #     package_name: 'claudit'
+  #     node-version: '22'
+  #   secrets: inherit
+  #
+  # 2. For container-based applications:
+  # taxfix-ci-cd:
+  #   uses: 'taxfix/actions/.github/workflows/container-based-application--common-targets.yml@main'
+  #   with:
+  #     package_name: 'claudit'
+  #     node-version: '22'
+  #   secrets: inherit
+
+  
+  # ---------------------------------------------
+  # Minimal CI check (keep only if not using above):
+  software-catalog-validation:
+    name: Software Catalog Validation
+    uses: taxfix/actions/.github/workflows/software-catalog-validator.yaml@main
+    secrets: inherit
